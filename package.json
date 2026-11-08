@@ -1,0 +1,22 @@
+{
+  "name": "tonys-world",
+  "version": "1.0.0",
+  "description": "Tony's World — multiplayer classic games & murder mysteries",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.22.3",
+    "socket.io": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}

@@ -1,0 +1,360 @@
+'use strict';
+// Tony's World — multiplayer game server
+const express = require('express');
+const http = require('http');
+const path = require('path');
+const { Server } = require('socket.io');
+const GAMES = require('./server/games');
+
+const PORT = process.env.PORT || 3000;
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { pingInterval: 10000, pingTimeout: 20000, maxHttpBufferSize: 1e5 });
+
+const rooms = new Map();
+
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const COLORS = ['#ff5a5f', '#3a86ff', '#2ec4b6', '#ffc93c', '#b388ff', '#ff8c42', '#06d6a0', '#f15bb5', '#9bdeac', '#4cc9f0'];
+const AVATARS = ['🦊', '🐼', '🐸', '🐯', '🦄', '🐙', '🐧', '🦁', '🐵', '🐨', '🐰', '🐲', '👽', '🦖', '🐝', '🦉'];
+const BOT_NAMES = ['Robo Rita', 'Beep Boop', 'Sir Clanks', 'Gizmo', 'Sprocket', 'Bolt', 'Widget', 'Pixel', 'Cogsworth'];
+const MAX_PLAYERS = 10;
+let nextId = 1;
+
+function makeCode() {
+  let c;
+  do {
+    c = '';
+    for (let i = 0; i < 5; i++) c += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  } while (rooms.has(c));
+  return c;
+}
+function clean(str, max) {
+  return String(str ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
+}
+function pickColor(room) {
+  const used = new Set(room.players.map(p => p.color));
+  return COLORS.find(c => !used.has(c)) || COLORS[room.players.length % COLORS.length];
+}
+function gameMeta(id) {
+  const m = GAMES[id];
+  return { id, name: m.name, minPlayers: m.minPlayers, maxPlayers: m.maxPlayers, supportsBots: m.supportsBots, optionsSchema: m.optionsSchema };
+}
+
+function addHuman(room, name, avatar, token) {
+  const p = {
+    id: 'p' + (nextId++), token: token || null, name, avatar: AVATARS.includes(avatar) ? avatar : AVATARS[room.players.length % AVATARS.length],
+    color: pickColor(room), isBot: false, connected: true, socketId: null, disconnectedAt: null, ghost: false,
+  };
+  room.players.push(p);
+  return p;
+}
+function addBot(room) {
+  const used = new Set(room.players.map(p => p.name));
+  const name = BOT_NAMES.find(n => !used.has(n)) || 'Bot ' + nextId;
+  const p = { id: 'b' + (nextId++), name, avatar: '🤖', color: pickColor(room), isBot: true, connected: true, ghost: false };
+  room.players.push(p);
+  return p;
+}
+
+function publicPlayer(p, room) {
+  return { id: p.id, name: p.name, avatar: p.avatar, color: p.color, isBot: p.isBot, ghost: p.ghost, connected: p.isBot || p.connected, isHost: room.hostId === p.id };
+}
+function roomView(room, pid) {
+  const mod = room.game ? GAMES[room.game] : null;
+  let view = null;
+  if (room.state) {
+    try { view = mod.view(room.state, pid); } catch (e) { console.error('view error', e); }
+  }
+  return {
+    code: room.code, you: pid, hostId: room.hostId,
+    players: room.players.map(p => publicPlayer(p, room)),
+    selectedGame: room.selectedGame, meta: gameMeta(room.selectedGame), options: room.options,
+    status: room.state ? 'playing' : 'lobby', game: room.game, view,
+  };
+}
+function broadcast(room) {
+  for (const p of room.players) {
+    if (!p.isBot && p.connected && p.socketId) io.to(p.socketId).emit('room:state', roomView(room, p.id));
+  }
+}
+function pushChat(room, msg) {
+  msg.ts = Date.now();
+  msg.mid = nextId++;
+  room.chat.push(msg);
+  if (room.chat.length > 120) room.chat.splice(0, room.chat.length - 120);
+  io.to(room.code).emit('chat', msg);
+}
+function sysMsg(room, text) { pushChat(room, { system: true, text }); }
+
+function humansConnected(room) { return room.players.filter(p => !p.isBot && p.connected); }
+function pickHost(room) {
+  const next = humansConnected(room)[0] || room.players.find(p => !p.isBot);
+  if (next && next.id !== room.hostId) {
+    room.hostId = next.id;
+    sysMsg(room, `${next.name} is now the host 👑`);
+  }
+}
+function destroyRoom(room) {
+  clearTimeout(room.botTimer); clearTimeout(room.reactTimer);
+  rooms.delete(room.code);
+}
+
+// ---------- game flow ----------
+function ctxFor(room, pid) {
+  return { humans: humansConnected(room).map(p => p.id), isHost: pid === room.hostId };
+}
+function afterChange(room) {
+  broadcast(room);
+  scheduleBot(room);
+}
+function scheduleBot(room) {
+  clearTimeout(room.botTimer); room.botTimer = null;
+  if (!room.state) return;
+  const mod = GAMES[room.game];
+  if (mod.turnPlayer) {
+    const tp = mod.turnPlayer(room.state);
+    const p = tp && room.players.find(x => x.id === tp);
+    if (tp && (!p || p.isBot)) {
+      const delay = typeof mod.botDelay === 'function' ? mod.botDelay(room.state) : 1100;
+      room.botTimer = setTimeout(() => { room.botTimer = null; autoMove(room, tp); }, delay);
+    }
+  }
+  if (mod.botReaction && !room.reactTimer) {
+    const r = mod.botReaction(room.state, id => { const p = room.players.find(x => x.id === id); return !p || p.isBot; });
+    if (r) {
+      room.reactTimer = setTimeout(() => {
+        room.reactTimer = null;
+        if (!room.state) return;
+        if (!mod.action(room.state, r.id, r.action, ctxFor(room, r.id))) afterChange(room);
+      }, r.delay);
+    }
+  }
+}
+function autoMove(room, pid) {
+  if (!room.state) return;
+  const mod = GAMES[room.game];
+  if (mod.turnPlayer(room.state) !== pid) return;
+  const a = mod.botAction(room.state, pid);
+  if (a) {
+    const err = mod.action(room.state, pid, a, ctxFor(room, pid));
+    if (err) console.warn('bot action rejected:', err, a);
+  }
+  afterChange(room);
+}
+
+// ---------- sockets ----------
+io.on('connection', socket => {
+  let room = null;
+  let player = null;
+  let lastChat = 0;
+
+  const reply = cb => (typeof cb === 'function' ? cb : () => {});
+
+  function bind(r, p) {
+    room = r; player = p;
+    p.socketId = socket.id; p.connected = true; p.disconnectedAt = null;
+    socket.join(r.code);
+  }
+  function leave() {
+    if (!room) return;
+    const r = room, p = player;
+    room = null; player = null;
+    socket.leave(r.code);
+    const mod = r.game && GAMES[r.game];
+    const inGame = r.state && (r.participants || []).includes(p.id) && !mod.isOver(r.state);
+    if (inGame) {
+      // keep the seat so the game can continue: a bot takes over
+      p.isBot = true; p.ghost = true; p.connected = false; p.socketId = null;
+      p.origName = p.name; p.name = p.name + ' (bot)';
+      sysMsg(r, `${p.origName} left — a bot is playing for them`);
+    } else {
+      r.players = r.players.filter(x => x !== p);
+      sysMsg(r, `${p.name} left the room`);
+    }
+    if (!r.players.some(x => !x.isBot)) return destroyRoom(r);
+    if (r.hostId === p.id) pickHost(r);
+    afterChange(r);
+  }
+  function hostOnly(cb) {
+    if (!room) { reply(cb)({ error: 'You are not in a room' }); return false; }
+    if (room.hostId !== player.id) { reply(cb)({ error: 'Only the host can do that' }); return false; }
+    return true;
+  }
+
+  socket.on('room:create', (data = {}, cb) => {
+    const name = clean(data.name, 16);
+    if (!name) return reply(cb)({ error: 'Please enter your name first' });
+    if (room) leave();
+    const r = {
+      code: makeCode(), hostId: null, players: [], selectedGame: 'colorclash', options: GAMES.colorclash.defaultOptions(),
+      game: null, state: null, participants: [], chat: [], botTimer: null, reactTimer: null, emptySince: null,
+    };
+    rooms.set(r.code, r);
+    const p = addHuman(r, name, data.avatar, clean(data.token, 64));
+    r.hostId = p.id;
+    bind(r, p);
+    sysMsg(r, `${p.name} created the room. Share the code ${r.code} with friends!`);
+    reply(cb)({ ok: true, code: r.code, you: p.id });
+    socket.emit('chat:history', r.chat);
+    broadcast(r);
+  });
+
+  socket.on('room:join', (data = {}, cb) => {
+    const code = clean(data.code, 12).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const r = rooms.get(code);
+    if (!r) return reply(cb)({ error: `No room found with code "${code}". Check the code and try again.` });
+    const token = clean(data.token, 64);
+    let p = token ? r.players.find(x => x.token === token) : null;
+    if (p) {
+      if (room && room !== r) leave();
+      if (p.ghost) { // came back after leaving mid-game
+        p.ghost = false; p.isBot = false; p.name = p.origName || p.name;
+        sysMsg(r, `${p.name} is back!`);
+      }
+      bind(r, p);
+    } else {
+      const name = clean(data.name, 16);
+      if (!name) return reply(cb)({ error: 'Please enter your name first' });
+      if (r.players.length >= MAX_PLAYERS) return reply(cb)({ error: 'Sorry, that room is full (10 players max).' });
+      if (room) leave();
+      p = addHuman(r, name, data.avatar, token);
+      bind(r, p);
+      sysMsg(r, `${p.name} joined the room`);
+    }
+    reply(cb)({ ok: true, code: r.code, you: p.id });
+    socket.emit('chat:history', r.chat);
+    broadcast(r);
+  });
+
+  socket.on('room:leave', (_d, cb) => { leave(); reply(cb)({ ok: true }); });
+
+  socket.on('room:select', (data = {}, cb) => {
+    if (!hostOnly(cb)) return;
+    if (room.state) return reply(cb)({ error: 'Finish or end the current game first' });
+    if (!GAMES[data.game]) return reply(cb)({ error: 'That game is not available yet' });
+    room.selectedGame = data.game;
+    room.options = GAMES[data.game].defaultOptions();
+    if (!GAMES[data.game].supportsBots) room.players = room.players.filter(p => !p.isBot);
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  socket.on('room:option', (data = {}, cb) => {
+    if (!hostOnly(cb)) return;
+    if (room.state) return reply(cb)({ error: 'Cannot change options during a game' });
+    const opt = GAMES[room.selectedGame].optionsSchema.find(o => o.key === data.key);
+    if (!opt || !opt.choices.some(c => c.value === data.value)) return reply(cb)({ error: 'Invalid option' });
+    room.options[data.key] = data.value;
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  socket.on('room:addBot', (_d, cb) => {
+    if (!hostOnly(cb)) return;
+    const mod = GAMES[room.selectedGame];
+    if (room.state) return reply(cb)({ error: 'Add bots between games' });
+    if (!mod.supportsBots) return reply(cb)({ error: `${mod.name} doesn't use bots` });
+    if (room.players.length >= Math.min(MAX_PLAYERS, mod.maxPlayers)) return reply(cb)({ error: 'No more seats available' });
+    addBot(room);
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  socket.on('room:remove', (data = {}, cb) => {
+    if (!hostOnly(cb)) return;
+    if (room.state) return reply(cb)({ error: 'You can remove players between games' });
+    const target = room.players.find(p => p.id === data.id);
+    if (!target || target.id === player.id) return reply(cb)({ error: 'Cannot remove that player' });
+    room.players = room.players.filter(p => p !== target);
+    if (!target.isBot) {
+      if (target.socketId) {
+        const s = io.sockets.sockets.get(target.socketId);
+        if (s) { s.emit('kicked'); s.leave(room.code); }
+      }
+      sysMsg(room, `${target.name} was removed by the host`);
+    }
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  socket.on('room:start', (_d, cb) => {
+    if (!hostOnly(cb)) return;
+    const mod = GAMES[room.selectedGame];
+    if (room.state && !GAMES[room.game].isOver(room.state)) return reply(cb)({ error: 'A game is already running' });
+    room.players = room.players.filter(p => !p.ghost);
+    const seats = room.players;
+    if (seats.length < mod.minPlayers) return reply(cb)({ error: `${mod.name} needs at least ${mod.minPlayers} players${mod.supportsBots ? ' — add a bot!' : ''}` });
+    if (seats.length > mod.maxPlayers) return reply(cb)({ error: `${mod.name} allows at most ${mod.maxPlayers} players` });
+    room.game = room.selectedGame;
+    room.participants = seats.map(p => p.id);
+    room.state = mod.create(seats.map(p => ({ id: p.id, name: p.name, isBot: p.isBot })), { ...room.options });
+    sysMsg(room, `🎮 ${mod.name} has started!`);
+    reply(cb)({ ok: true });
+    afterChange(room);
+  });
+
+  socket.on('room:lobby', (_d, cb) => {
+    if (!hostOnly(cb)) return;
+    clearTimeout(room.botTimer); clearTimeout(room.reactTimer);
+    room.botTimer = room.reactTimer = null;
+    room.state = null; room.game = null; room.participants = [];
+    room.players = room.players.filter(p => !p.ghost);
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  socket.on('game:action', (action, cb) => {
+    if (!room || !room.state) return reply(cb)({ error: 'No game is running' });
+    if (!action || typeof action !== 'object' || typeof action.type !== 'string') return reply(cb)({ error: 'Bad action' });
+    const mod = GAMES[room.game];
+    let err;
+    try { err = mod.action(room.state, player.id, action, ctxFor(room, player.id)); } catch (e) { console.error(e); err = 'Something went wrong'; }
+    if (err) return reply(cb)({ error: err });
+    reply(cb)({ ok: true });
+    afterChange(room);
+  });
+
+  socket.on('chat', text => {
+    if (!room) return;
+    const now = Date.now();
+    if (now - lastChat < 350) return;
+    lastChat = now;
+    const t = clean(text, 300);
+    if (!t) return;
+    pushChat(room, { from: player.id, name: player.name, avatar: player.avatar, color: player.color, text: t });
+  });
+
+  socket.on('disconnect', () => {
+    if (!room || !player || player.socketId !== socket.id) return;
+    player.connected = false;
+    player.disconnectedAt = Date.now();
+    broadcast(room);
+  });
+});
+
+// housekeeping: host hand-off, auto-play for disconnected players, cleanup
+setInterval(() => {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    const online = humansConnected(room);
+    if (!online.length) {
+      room.emptySince = room.emptySince || now;
+      if (now - room.emptySince > 30 * 60 * 1000) destroyRoom(room);
+      continue;
+    }
+    room.emptySince = null;
+    const host = room.players.find(p => p.id === room.hostId);
+    if (!host || (!host.connected && now - host.disconnectedAt > 30000)) { pickHost(room); broadcast(room); }
+    if (room.state && !room.botTimer) {
+      const mod = GAMES[room.game];
+      const tp = mod.turnPlayer && mod.turnPlayer(room.state);
+      const p = tp && room.players.find(x => x.id === tp);
+      if (p && !p.isBot && !p.connected && now - p.disconnectedAt > 20000) autoMove(room, tp);
+    }
+  }
+}, 2000);
+
+server.listen(PORT, () => console.log(`🌍 Tony's World running on http://localhost:${PORT}`));

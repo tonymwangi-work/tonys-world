@@ -20,7 +20,10 @@
         <nav class="cf-tabs" id="cf-tabs"></nav>
         <div class="cf-banner" id="cf-banner" hidden></div>
         <div class="cf-body" id="cf-body"></div>
-      </div>`;
+      </div>
+      <div class="cf-setup" id="cf-setup" hidden></div>`;
+      let clockTimer = null;
+      let deadline = null;
 
       const pName = id => (api.player(id) || {}).name || (v.players.find(p => p.id === id) || {}).name || '?';
       const isPlayer = () => v.players.some(p => p.id === api.me);
@@ -47,6 +50,7 @@
             <span class="cf-chip">⭐ ${esc(c.difficulty)}</span>
             <span class="cf-chip" title="Moves used. Par: ${c.par}">⏱️ ${v.file ? v.file.actions : 0} moves <small>(par ${c.par})</small></span>
             <span class="cf-chip">🧾 ${v.file ? v.file.found.length : 0}/${v.totalEvidence}</span>
+            ${v.timeLeft !== null ? '<span class="cf-chip cf-clock-chip" id="cf-clock"></span>' : ''}
           </div>
           ${raceInfo ? `<div class="cf-race">${raceInfo}</div>` : ''}`;
       }
@@ -159,8 +163,9 @@
           const nm = (list, id) => (list.find(x => x.id === id) || {}).name || '—';
           const sus = id => (c.suspects.find(x => x.id === id) || {});
           let headline;
-          if (v.mode === 'race') headline = v.winner ? `${v.winner === api.me ? 'You' : esc(pName(v.winner))} cracked the case first!` : 'Nobody solved it — the killer walks free…';
-          else headline = r.correct === 3 ? 'Case closed — the team got it right!' : r.correct === 2 ? 'So close! The team got two out of three.' : 'The killer got away…';
+          if (v.mode === 'race' && r.timeout) headline = '⏰ Time ran out before anyone cracked it!';
+          else if (v.mode === 'race') headline = v.winner ? `${v.winner === api.me ? 'You' : esc(pName(v.winner))} cracked the case first!` : 'Nobody solved it — the killer walks free…';
+          else headline = r.timeout && !Object.keys(v.allVotes || {}).length ? '⏰ Time ran out. The killer walks free…' : r.correct === 3 ? 'Case closed — the team got it right!' : r.correct === 2 ? 'So close! The team got two out of three.' : 'The killer got away…';
           const row = (label, key, list) => {
             const ans = v.mode === 'coop' ? r.answer[key] : null;
             return `<tr><td>${label}</td><td><b>${key === 'culprit' ? `${sus(s.culprit).emoji} ${esc(sus(s.culprit).name)}` : esc(nm(list, s[key]))}</b></td>${v.mode === 'coop' ? `<td class="${ans === s[key] ? 'ok' : 'bad'}">${ans === s[key] ? '✓' : '✗'} ${key === 'culprit' ? esc(sus(ans).name || '—') : esc(nm(list, ans))}</td>` : ''}</tr>`;
@@ -269,9 +274,54 @@
         if (r.ok) input.value = '';
       });
 
+      function renderSetup() {
+        const st = v.setup, host = api.isHost;
+        const hostName = (api.room.players.find(p => p.isHost) || {}).name || 'The host';
+        const el = $('#cf-setup', root);
+        el.innerHTML = `
+          <div class="cf-setup-head"><span>🕵️</span><div><h2>Choose your case</h2><p>${host ? 'You are the host: pick a case, how you want to play, and hit Begin.' : `${esc(hostName)} is choosing. Shout your pick in the chat!`}</p></div></div>
+          <h3 class="cf-step">1 · The case</h3>
+          <div class="cf-case-pick">${v.cases.map(c => `<button class="cf-case ${st.caseId === c.id ? 'on' : ''}" data-setup="caseId" data-val="${c.id}" ${host ? '' : 'disabled'}>
+            <span class="cf-case-emoji">${c.emoji}</span>
+            <b>${esc(c.title)}</b>
+            <span class="cf-diff d-${esc(c.difficulty.split(' ')[0].toLowerCase())}">${esc(c.difficulty)}</span>
+            <small>${esc(c.tagline)}</small>
+            <small class="muted">☠️ ${esc(c.victim)} · ${c.suspects} suspects</small>
+          </button>`).join('')}</div>
+          <h3 class="cf-step">2 · How do you want to play?</h3>
+          <div class="cf-mode-pick">
+            <button class="cf-mode ${st.mode === 'coop' ? 'on' : ''}" data-setup="mode" data-val="coop" ${host ? '' : 'disabled'}><span>🤝</span><b>Tackle it together</b><small>One shared case file. Search, question and pin notes as a team, then vote on who did it.</small></button>
+            <button class="cf-mode ${st.mode === 'race' ? 'on' : ''}" data-setup="mode" data-val="race" ${host ? '' : 'disabled'}><span>🏁</span><b>Race each other</b><small>Everyone investigates alone. One accusation each. The first to name the killer correctly wins.</small></button>
+          </div>
+          <h3 class="cf-step">3 · Race against the clock?</h3>
+          <div class="cf-clock-pick">${[[0, '♾️ No clock'], [10, '⏱️ 10 min'], [20, '⏱️ 20 min'], [30, '⏱️ 30 min']].map(([m, l]) => `<button class="cf-clock ${st.clock === m ? 'on' : ''}" data-setup="clock" data-val="${m}" ${host ? '' : 'disabled'}>${l}</button>`).join('')}</div>
+          <p class="muted small">${st.clock ? `When the clock hits zero the case closes${st.mode === 'coop' ? ' using the votes so far' : ''}. No accusation means the killer walks free!` : 'Take as long as you like.'}</p>
+          ${host ? '<button class="btn btn-primary btn-big" data-begin>🔍 Begin the investigation</button>' : '<div class="waiting">⏳ Waiting for the host to begin…</div>'}`;
+      }
+      root.addEventListener('click', e => {
+        const b = e.target.closest('[data-setup]');
+        if (b) { const k = b.dataset.setup; api.act({ type: 'setup', [k]: k === 'clock' ? Number(b.dataset.val) : b.dataset.val }); return; }
+        if (e.target.closest('[data-begin]')) api.act({ type: 'begin' });
+      });
+      function tickClock() {
+        const chip = $('#cf-clock', root);
+        if (!chip || deadline === null) return;
+        const left = Math.max(0, deadline - Date.now());
+        const m = Math.floor(left / 60000), sec = Math.floor(left / 1000) % 60;
+        chip.textContent = `⏳ ${m}:${String(sec).padStart(2, '0')}`;
+        chip.classList.toggle('urgent', left < 60000);
+      }
+
       function update(nv) {
         const prev = v;
         v = nv;
+        const setup = v.phase === 'setup';
+        $('#cf-setup', root).hidden = !setup;
+        root.querySelector('.cf').hidden = setup;
+        if (setup) { caseKey = null; renderSetup(); return; }
+        deadline = v.timeLeft !== null ? Date.now() + v.timeLeft : null;
+        clearInterval(clockTimer);
+        if (deadline !== null) clockTimer = setInterval(tickClock, 500);
         const key = v.case.id + ':' + v.mode;
         if (key !== caseKey || (prev && prev.phase === 'solved' && v.phase !== 'solved')) {
           // new case started
@@ -293,7 +343,7 @@
           const good = v.mode === 'race' ? v.winner === api.me : v.result.correct === 3;
           if (good) TW.confetti();
         }
-        header(); tabs();
+        header(); tabs(); tickClock();
         // keep typing in the board / accuse tabs intact
         const keep = (tab === 'board' || tab === 'accuse') && prev && prev.phase === v.phase && $('#cf-body', root).firstElementChild;
         renderBody(!keep);
@@ -302,7 +352,7 @@
         banner.hidden = !(v.mode === 'race' && v.myVote && v.phase !== 'solved');
         banner.textContent = '❌ Your accusation was wrong — you are out of the race. You can still read your file.';
       }
-      return { update, unmount() {} };
+      return { update, unmount() { clearInterval(clockTimer); } };
     },
   };
 })();

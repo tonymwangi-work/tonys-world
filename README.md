@@ -6,10 +6,11 @@ Classic games and murder mysteries to play with friends in the browser. One pers
 
 | Game | Players | Status |
 |---|---|---|
-| 🃏 **Color Clash**: match colors & numbers, Block / Flip / +2 / Rainbow +4, shout "CLASH!" on your last card | 2–10 (bots welcome) | ✅ |
-| 🌿 **Vines & Slides**: climb vines, dodge slides, first to 100 | 1–6 (bots welcome) | ✅ |
-| 🕵️ **Case Files**: search scenes, question suspects, pin notes, accuse the killer. Co-op or Race mode, 3 original cases | 1–10 | ✅ |
-| 👾 Snack Attack · 🛢️ Barrel Climb · 🏙️ Tony-opoly Tycoon | | 🚧 coming soon |
+| 🃏 **Color Clash**: match colors & numbers, Block / Flip / +2 / Color Change / +4, stack +2s and +4s, shout "CLASH!" on your last card | 2–10 (bots welcome) | ✅ |
+| 🐍 **Snakes & Ladders**: climb ladders, dodge snakes, first to 100 | 1–6 (bots welcome) | ✅ |
+| 🛢️ **Barrel Climb**: live platformer, race up the girders and jump Big Bolt's barrels | 1–6 | ✅ |
+| 🕵️ **Case Files**: search scenes, question suspects, pin notes, accuse the killer. choose a case, then solve it together or race each other, with an optional countdown clock. 3 original cases | 1–10 | ✅ |
+| 👾 Snack Attack · 🏙️ Tony-opoly Tycoon | | 🚧 coming soon |
 
 Features: room codes and invite links, chat, host controls, bots, automatic reconnect (refreshing the page keeps your seat), a bot takes over if someone leaves mid-game, works on phones.
 

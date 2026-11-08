@@ -49,29 +49,49 @@ module.exports = {
   minPlayers: 1,
   maxPlayers: 10,
   supportsBots: false,
-  optionsSchema: [
-    { key: 'caseId', label: 'Case', choices: CASES.map(c => ({ value: c.id, label: `${c.emoji} ${c.title} (${c.difficulty})` })) },
-    { key: 'mode', label: 'Mode', choices: [{ value: 'coop', label: '🤝 Co-op team investigation' }, { value: 'race', label: '🏁 Race to solve' }] },
-  ],
-  defaultOptions: () => ({ caseId: CASES[0].id, mode: 'coop' }),
+  optionsSchema: [],
+  defaultOptions: () => ({}),
 
-  create(players, opts) {
-    const s = {
-      caseId: byId[opts.caseId] ? opts.caseId : CASES[0].id, mode: opts.mode === 'race' ? 'race' : 'coop',
+  create(players) {
+    return {
+      caseId: CASES[0].id, mode: 'coop', clock: 0,
       players: players.map(p => p.id), names: Object.fromEntries(players.map(p => [p.id, p.name])),
-      files: {}, votes: {}, accused: {}, phase: 'investigating', result: null, winner: null, noteSeq: 0,
+      files: {}, votes: {}, accused: {}, phase: 'setup', result: null, winner: null, noteSeq: 0, deadline: null,
     };
-    const keys = s.mode === 'coop' ? ['team'] : s.players;
-    for (const k of keys) { s.files[k] = newFile(); reveal(s, s.files[k]); }
-    return s;
   },
   isOver: s => s.phase === 'solved',
   turnPlayer: () => null,
 
+  tick(s, now) {
+    if (s.phase !== 'investigating' || !s.deadline || now < s.deadline) return false;
+    if (s.mode === 'coop' && Object.keys(s.votes).length) resolveCoop(s);
+    else { s.phase = 'solved'; s.result = { correct: 0, rank: rankFor(0, 0, caseOf(s).par) }; }
+    s.result.timeout = true;
+    return true;
+  },
+
   action(s, pid, a, ctx) {
-    const c = caseOf(s);
     if (!s.players.includes(pid)) return 'You are watching this case';
     if (s.phase === 'solved') return 'This case is closed';
+    if (s.phase === 'setup') {
+      if (a.type === 'setup') {
+        if (!ctx.isHost) return 'The host makes the choices — suggest one in chat!';
+        if (a.caseId !== undefined) { if (!byId[a.caseId]) return 'Unknown case'; s.caseId = a.caseId; }
+        if (a.mode !== undefined) { if (!['coop', 'race'].includes(a.mode)) return 'Unknown mode'; s.mode = a.mode; }
+        if (a.clock !== undefined) { if (![0, 10, 20, 30].includes(a.clock)) return 'Unknown clock'; s.clock = a.clock; }
+        return;
+      }
+      if (a.type === 'begin') {
+        if (!ctx.isHost) return 'Waiting for the host to begin';
+        const keys = s.mode === 'coop' ? ['team'] : s.players;
+        for (const k of keys) { s.files[k] = newFile(); reveal(s, s.files[k]); }
+        s.phase = 'investigating';
+        s.deadline = s.clock ? Date.now() + s.clock * 60000 : null;
+        return;
+      }
+      return 'Choose a case first';
+    }
+    const c = caseOf(s);
     if (s.mode === 'race' && s.accused[pid]) return 'You already made your accusation';
     const file = s.files[fileKey(s, pid)];
     const name = s.names[pid];
@@ -149,6 +169,13 @@ module.exports = {
   },
 
   view(s, pid) {
+    if (s.phase === 'setup') {
+      return {
+        phase: 'setup', setup: { caseId: s.caseId, mode: s.mode, clock: s.clock },
+        cases: CASES.map(c => ({ id: c.id, title: c.title, emoji: c.emoji, difficulty: c.difficulty, tagline: c.tagline, suspects: c.suspects.length, victim: c.victim.name })),
+        players: s.players.map(id => ({ id, name: s.names[id] })),
+      };
+    }
     const c = caseOf(s);
     const key = s.players.includes(pid) ? fileKey(s, pid) : (s.mode === 'coop' ? 'team' : null);
     const file = key ? s.files[key] : null;
@@ -178,6 +205,8 @@ module.exports = {
       accused: Object.keys(s.accused),
       players: s.players.map(id => ({ id, name: s.names[id], actions: s.mode === 'race' ? s.files[id].actions : undefined, found: s.mode === 'race' ? s.files[id].found.length : undefined })),
       winner: s.winner,
+      timeLeft: s.deadline && s.phase !== 'solved' ? Math.max(0, s.deadline - Date.now()) : null,
+      clock: s.clock,
       totalEvidence: c.evidence.length,
     };
     if (solved) {

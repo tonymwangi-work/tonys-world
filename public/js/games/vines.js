@@ -27,34 +27,83 @@
     ];
   }
   function boardSVG(board) {
-    let out = '';
-    const slideColors = [['#ff5a5f', '#ff9a9e'], ['#3a86ff', '#8ec5ff'], ['#f15bb5', '#ffa6d9'], ['#ff8c42', '#ffc49b'], ['#b388ff', '#d9c6ff']];
-    let k = 0;
-    for (const [from, to] of Object.entries(board.slides)) {
-      const a = center(+from), b = center(to);
-      const [c1, c2] = controls(a, b, 60);
-      const d = `M${a.x},${a.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${b.x},${b.y}`;
-      const [dark, light] = slideColors[k++ % slideColors.length];
-      out += `<g class="slide"><path d="${d}" stroke="rgba(0,0,0,.25)" stroke-width="46" transform="translate(4,6)"/><path d="${d}" stroke="${dark}" stroke-width="42"/><path d="${d}" stroke="${light}" stroke-width="26"/><path d="${d}" stroke="rgba(255,255,255,.65)" stroke-width="5" stroke-dasharray="2 22"/>
-        <circle cx="${a.x}" cy="${a.y}" r="22" fill="${dark}"/><circle cx="${b.x}" cy="${b.y}" r="16" fill="${light}" stroke="${dark}" stroke-width="5"/></g>`;
-    }
+    const SNAKES = [
+      ['#2f9e44', '#a9e34b', '#ffe066'], ['#7048e8', '#da77f2', '#fcc2d7'], ['#e03131', '#ff922b', '#ffd43b'],
+      ['#1971c2', '#4dabf7', '#99e9f2'], ['#5c3d2e', '#c08552', '#f3d9a4'], ['#c2255c', '#f06595', '#ffdeeb'],
+    ];
+    let defs = '', ladders = '', snakes = '';
+    // ── ladders: two wooden rails with rungs
     for (const [from, to] of Object.entries(board.vines)) {
       const a = center(+from), b = center(to);
-      const [c1, c2] = controls(a, b, 45);
-      const d = `M${a.x},${a.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${b.x},${b.y}`;
-      let leaves = '';
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      const count = Math.max(3, Math.round(len / 70));
-      for (let i = 1; i < count; i++) {
-        const t = i / count;
-        const p = bez(a, c1, c2, b, t), q = bez(a, c1, c2, b, t + 0.01);
-        const ang = Math.atan2(q.y - p.y, q.x - p.x) * 180 / Math.PI + (i % 2 ? 50 : -50);
-        leaves += `<ellipse cx="${p.x}" cy="${p.y}" rx="20" ry="9" fill="${i % 2 ? '#3ddc84' : '#2bb673'}" transform="rotate(${ang} ${p.x} ${p.y}) translate(16 0)"/>`;
+      const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+      const nx = -dy / len * 17, ny = dx / len * 17;
+      const ux = dx / len, uy = dy / len;
+      const a2 = { x: a.x - ux * 18, y: a.y - uy * 18 }, b2 = { x: b.x + ux * 18, y: b.y + uy * 18 };
+      let rungs = '';
+      const n = Math.max(2, Math.floor(len / 34));
+      for (let i = 1; i <= n; i++) {
+        const t = i / (n + 1);
+        const px = a2.x + (b2.x - a2.x) * t, py = a2.y + (b2.y - a2.y) * t;
+        rungs += `<line x1="${px - nx}" y1="${py - ny}" x2="${px + nx}" y2="${py + ny}" stroke="#7a4a1f" stroke-width="10"/><line x1="${px - nx}" y1="${py - ny}" x2="${px + nx}" y2="${py + ny}" stroke="#e0a96d" stroke-width="5"/>`;
       }
-      out += `<g class="vine"><path d="${d}" stroke="rgba(0,0,0,.25)" stroke-width="20" transform="translate(4,6)"/><path d="${d}" stroke="#1e7a45" stroke-width="18"/><path d="${d}" stroke="#4caf50" stroke-width="10"/><path d="${d}" stroke="#a5e887" stroke-width="3" stroke-dasharray="14 18"/>${leaves}
-        <text x="${b.x}" y="${b.y + 14}" font-size="40" text-anchor="middle">🌸</text></g>`;
+      const rail = sgn => `<line x1="${a2.x + nx * sgn}" y1="${a2.y + ny * sgn}" x2="${b2.x + nx * sgn}" y2="${b2.y + ny * sgn}"`;
+      ladders += `<g class="ladder">
+        <g transform="translate(6,8)" opacity=".28">${rail(-1)} stroke="#000" stroke-width="12"/>${rail(1)} stroke="#000" stroke-width="12"/></g>
+        ${rungs}
+        ${rail(-1)} stroke="#6b3f17" stroke-width="12"/>${rail(1)} stroke="#6b3f17" stroke-width="12"/>
+        ${rail(-1)} stroke="#c98b4a" stroke-width="6"/>${rail(1)} stroke="#c98b4a" stroke-width="6"/>
+        ${rail(-1)} stroke="#f2c78f" stroke-width="2" transform="translate(-1.5,-1.5)"/>${rail(1)} stroke="#f2c78f" stroke-width="2" transform="translate(-1.5,-1.5)"/>
+      </g>`;
     }
-    return `<svg class="vs-svg" viewBox="0 0 1000 1000" fill="none" stroke-linecap="round">${out}</svg>`;
+    // ── snakes: tapered wiggly bodies with patterns, head at the top square
+    let k = 0;
+    for (const [from, to] of Object.entries(board.slides)) {
+      const head = center(+from), tail = center(to);
+      const [dark, mid, light] = SNAKES[k % SNAKES.length];
+      const id = 'sn' + k++;
+      const dx = tail.x - head.x, dy = tail.y - head.y, len = Math.hypot(dx, dy);
+      const ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+      const waves = Math.max(1.5, len / 190), amp = Math.min(40, 18 + len / 20);
+      const N = 70, pts = [];
+      for (let i = 0; i <= N; i++) {
+        const t = i / N;
+        const env = Math.sin(Math.PI * Math.min(1, t * 1.15)) ;
+        const off = Math.sin(t * Math.PI * 2 * waves) * amp * env;
+        pts.push({ x: head.x + dx * t + nx * off, y: head.y + dy * t + ny * off, w: 30 * (1 - t) + 4 });
+      }
+      const L = [], R = [];
+      for (let i = 0; i <= N; i++) {
+        const p = pts[i], q = pts[Math.min(N, i + 1)], o = pts[Math.max(0, i - 1)];
+        let tx = q.x - o.x, ty = q.y - o.y; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+        L.push(`${(p.x - ty * p.w / 2).toFixed(1)},${(p.y + tx * p.w / 2).toFixed(1)}`);
+        R.push(`${(p.x + ty * p.w / 2).toFixed(1)},${(p.y - tx * p.w / 2).toFixed(1)}`);
+      }
+      const body = `M${L.join(' L')} L${R.reverse().join(' L')} Z`;
+      defs += `<linearGradient id="${id}" x1="${head.x}" y1="${head.y}" x2="${tail.x}" y2="${tail.y}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${mid}"/><stop offset="1" stop-color="${dark}"/></linearGradient>`;
+      let spots = '';
+      for (let i = 6; i < N - 3; i += 5) {
+        const p = pts[i];
+        spots += `<ellipse cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" rx="${(p.w * 0.28).toFixed(1)}" ry="${(p.w * 0.2).toFixed(1)}" fill="${i % 10 ? light : dark}" opacity=".9"/>`;
+      }
+      // head, facing away from the body
+      const h1 = pts[3];
+      const ang = Math.atan2(head.y - h1.y, head.x - h1.x) * 180 / Math.PI;
+      snakes += `<g class="snake">
+        <path d="${body}" fill="#000" opacity=".25" transform="translate(6,8)"/>
+        <path d="${body}" fill="url(#${id})" stroke="${dark}" stroke-width="3" stroke-linejoin="round"/>
+        ${spots}
+        <g transform="translate(${head.x} ${head.y}) rotate(${ang})">
+          <path d="M22,0 L42,0 M42,0 L50,-6 M42,0 L50,6" stroke="#e03131" stroke-width="3.5" fill="none" class="tongue"/>
+          <ellipse cx="0" cy="0" rx="27" ry="21" fill="${mid}" stroke="${dark}" stroke-width="3"/>
+          <ellipse cx="6" cy="0" rx="14" ry="10" fill="${light}" opacity=".55"/>
+          <circle cx="8" cy="-10" r="7" fill="#fff" stroke="${dark}" stroke-width="2"/><circle cx="8" cy="10" r="7" fill="#fff" stroke="${dark}" stroke-width="2"/>
+          <circle cx="10" cy="-10" r="3.5" fill="#111"/><circle cx="10" cy="10" r="3.5" fill="#111"/>
+          <circle cx="11" cy="-11.5" r="1.2" fill="#fff"/><circle cx="11" cy="8.5" r="1.2" fill="#fff"/>
+          <circle cx="23" cy="-4" r="1.6" fill="${dark}"/><circle cx="23" cy="4" r="1.6" fill="${dark}"/>
+        </g>
+      </g>`;
+    }
+    return `<svg class="vs-svg" viewBox="0 0 1000 1000" fill="none" stroke-linecap="round"><defs>${defs}</defs>${ladders}${snakes}</svg>`;
   }
 
   const PIPS = { 1: [5], 2: [1, 9], 3: [1, 5, 9], 4: [1, 3, 7, 9], 5: [1, 3, 5, 7, 9], 6: [1, 3, 4, 6, 7, 9] };
@@ -90,9 +139,10 @@
         for (let row = 9; row >= 0; row--) {
           for (let col = 0; col < 10; col++) {
             const n = row % 2 === 0 ? row * 10 + col + 1 : row * 10 + (9 - col) + 1;
-            const tone = (row + col) % 2 ? 'a' : 'b';
-            const mark = board.vines[n] ? 'has-vine' : board.slides[n] ? 'has-slide' : '';
-            cells += `<div class="vs-cell ${tone} ${mark} ${n === 100 ? 'goal' : ''}"><span>${n === 100 ? '🏁' : n}</span></div>`;
+            const tone = 't' + ((row * 3 + col) % 5);
+            const shade = (row + col) % 2 ? 'odd' : '';
+            const label = n === 100 ? '<b>🏆</b><em>100</em>' : n === 1 ? '<span>1</span><em>START</em>' : `<span>${n}</span>`;
+            cells += `<div class="vs-cell ${tone} ${shade} ${n === 100 ? 'goal' : ''} ${n === 1 ? 'first' : ''}">${label}</div>`;
           }
         }
         el.innerHTML = `<div class="vs-grid">${cells}</div>${boardSVG(board)}<div class="vs-tokens" id="vs-tokens"></div>`;
@@ -157,7 +207,7 @@
             t.classList.add(e.jump.kind === 'vine' ? 'climbing' : 'sliding');
             shown[e.player] = e.jump.to;
             placeTokens();
-            if (e.player === api.me) TW.toast(e.jump.kind === 'vine' ? `🌿 Up the vine to ${e.jump.to}!` : `🛝 Wheee! Down to ${e.jump.to}`, e.jump.kind === 'vine' ? 'ok' : 'error', 1800);
+            if (e.player === api.me) TW.toast(e.jump.kind === 'vine' ? `🪜 Up the ladder to ${e.jump.to}!` : `🐍 Ouch! Snake bite, down to ${e.jump.to}`, e.jump.kind === 'vine' ? 'ok' : 'error', 1800);
             await sleep(850);
             t.classList.remove('climbing', 'sliding');
           }

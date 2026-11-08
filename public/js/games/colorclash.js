@@ -3,7 +3,7 @@
   const { esc, h, $, $$ } = TW;
   const COLOR_NAMES = { red: 'Cherry', yellow: 'Sunny', green: 'Mint', blue: 'Ocean' };
   const SYMBOL = { skip: '⊘', flip: '⇄', draw2: '+2', wild: '✦', wild4: '+4' };
-  const WORD = { skip: 'BLOCK', flip: 'FLIP', draw2: 'DRAW', wild: 'RAINBOW', wild4: 'RAINBOW' };
+  const WORD = { skip: 'BLOCK', flip: 'FLIP', draw2: 'DRAW', wild: 'COLOR', wild4: 'COLOR' };
 
   function cardHTML(c, { cls = '', chosen = null } = {}) {
     if (!c) return '<div class="cc-card cc-empty"></div>';
@@ -37,7 +37,7 @@
       let busy = false;
 
       const pickColor = () => new Promise(resolve => {
-        const m = TW.modal(`<h2>Pick a color</h2><div class="color-pick">${Object.entries(COLOR_NAMES).map(([k, n]) => `<button class="cp cp-${k}" data-c="${k}">${n}</button>`).join('')}</div>`, { onClose: () => resolve(null) });
+        const m = TW.modal(`<h2>Change the color to…</h2><div class="color-pick">${Object.entries(COLOR_NAMES).map(([k, n]) => `<button class="cp cp-${k}" data-c="${k}">${n}</button>`).join('')}</div>`, { onClose: () => resolve(null) });
         $$('.cp', m.el).forEach(b => b.onclick = () => { resolve(b.dataset.c); m.close(); });
       });
 
@@ -54,7 +54,8 @@
         if (card) {
           const id = Number(card.dataset.id);
           if (!view.playable.includes(id)) {
-            if (view.turnId === api.me) TW.toast(`That doesn't match. Play ${COLOR_NAMES[view.color]} or a ${SYMBOL[view.top.value] || view.top.value}.`, 'error');
+            if (view.turnId === api.me && view.pending > 0) TW.toast(`Stack a ${view.top.value === 'draw2' ? '+2 or ' : ''}+4 card, or tap the deck to take ${view.pending}`, 'error');
+            else if (view.turnId === api.me) TW.toast(`That doesn't match. Play ${COLOR_NAMES[view.color]} or a ${SYMBOL[view.top.value] || view.top.value}.`, 'error');
             else TW.toast('Wait for your turn ⏳');
             return;
           }
@@ -67,6 +68,7 @@
         if (e.target.closest('#cc-deck')) {
           if (view.turnId !== api.me) return TW.toast('Wait for your turn ⏳');
           if (view.drawnCardId !== null) return TW.toast('Play the card you drew, or pass');
+          if (view.pending > 0 && view.playable.length && !confirm(`Take ${view.pending} cards instead of stacking?`)) return;
           return act({ type: 'draw' });
         }
         const b = e.target.closest('[data-cc]');
@@ -96,8 +98,8 @@
 
         // table
         const myTurn = v.turnId === me && v.phase === 'play';
-        $('#cc-deck', root).innerHTML = backHTML(myTurn && v.drawnCardId === null ? 'pulse' : '');
-        $('#cc-deck-label', root).textContent = `${v.deckCount} left`;
+        $('#cc-deck', root).innerHTML = backHTML(myTurn && v.drawnCardId === null && (v.pending > 0 || !v.playable.length) ? 'pulse' : '') + (v.pending > 0 ? `<span class="cc-pending">+${v.pending}</span>` : '');
+        $('#cc-deck-label', root).textContent = myTurn && v.pending > 0 ? `Tap to take ${v.pending}` : `${v.deckCount} left`;
         const disc = $('#cc-discard', root);
         if (v.lastEvent && v.lastEvent.seq !== lastSeq) {
           const e = v.lastEvent;
@@ -105,6 +107,8 @@
           disc.innerHTML = cardHTML(v.top, { cls: e.type === 'play' ? 'land' : '', chosen: v.top.color === 'wild' ? v.color : null });
           if (e.type === 'caught' && e.player === me) TW.toast('🚨 Caught! You forgot to call Clash! +2 cards', 'error');
           if (e.type === 'clash') flash(`${pName(e.player)}: CLASH!`);
+          if (e.type === 'take') flash(`${pName(e.player)} takes ${e.count}! 😵`);
+          if (e.type === 'play' && v.pending > 0) flash(`+${v.pending} stacked! 🔥`);
         } else if (!disc.firstElementChild || disc.firstElementChild.dataset.id !== String(v.top.id)) {
           disc.innerHTML = cardHTML(v.top, { chosen: v.top.color === 'wild' ? v.color : null });
         }
@@ -117,6 +121,7 @@
         let status;
         if (v.phase === 'over') status = v.winner === me ? '🏆 You win!' : `🏆 ${esc(pName(v.winner))} wins!`;
         else if (!v.hand) status = `👀 Watching — ${esc(pName(v.turnId))}'s turn`;
+        else if (myTurn && v.pending > 0) status = v.playable.length ? `🔥 Stack a ${v.top.value === 'draw2' ? '+2 or ' : ''}+4 to pass it on, or take ${v.pending}!` : `😬 No stack card. Tap the deck to take ${v.pending}`;
         else if (myTurn) status = v.drawnCardId !== null ? 'You drew a playable card — play it or pass' : v.playable.length ? '✨ Your turn! Play a matching card' : 'No match — draw a card from the deck';
         else status = `${pAv(v.turnId)} ${esc(pName(v.turnId))} is thinking…`;
         const st = $('#cc-status', root);

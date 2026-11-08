@@ -4,7 +4,7 @@ const { shuffle, pushLog } = require('./util');
 
 const COLORS = ['red', 'yellow', 'green', 'blue'];
 const COLOR_NAMES = { red: 'Cherry', yellow: 'Sunny', green: 'Mint', blue: 'Ocean' };
-const LABEL = { skip: 'Block', flip: 'Flip', draw2: '+2', wild: 'Rainbow', wild4: 'Rainbow +4' };
+const LABEL = { skip: 'Block', flip: 'Flip', draw2: '+2', wild: 'Color Change', wild4: 'Color Change +4' };
 
 function makeDeck() {
   let id = 0;
@@ -30,7 +30,10 @@ function points(c) {
   return 20;
 }
 function top(s) { return s.discard[s.discard.length - 1]; }
-function playable(s, c) { return c.color === 'wild' || c.color === s.color || c.value === top(s).value; }
+function playable(s, c) {
+  if (s.pending > 0) return c.value === 'wild4' || (c.value === 'draw2' && top(s).value === 'draw2');
+  return c.color === 'wild' || c.color === s.color || c.value === top(s).value;
+}
 function idxStep(s, steps) {
   const n = s.players.length;
   return (((s.turn + s.dir * steps) % n) + n) % n;
@@ -65,16 +68,17 @@ module.exports = {
   supportsBots: true,
   optionsSchema: [
     { key: 'handSize', label: 'Starting cards', choices: [{ value: 5, label: '5 (quick)' }, { value: 7, label: '7 (classic)' }, { value: 10, label: '10 (long)' }] },
+    { key: 'stacking', label: 'Stack +2 / +4', choices: [{ value: 'on', label: 'On — pass the pain along!' }, { value: 'off', label: 'Off' }] },
     { key: 'clashRule', label: 'Call "Clash!" rule', choices: [{ value: 'on', label: 'On — get caught, draw 2' }, { value: 'off', label: 'Off' }] },
   ],
-  defaultOptions: () => ({ handSize: 7, clashRule: 'on' }),
+  defaultOptions: () => ({ handSize: 7, stacking: 'on', clashRule: 'on' }),
 
   create(players, opts) {
     const s = {
       players: players.map(p => p.id), names: Object.fromEntries(players.map(p => [p.id, p.name])),
       hands: {}, deck: makeDeck(), discard: [], color: null, dir: 1, turn: 0, drawnCardId: null,
-      declared: {}, vulnerable: {}, phase: 'play', winner: null, scores: null, log: [], logSeq: 0, seq: 0, lastEvent: null,
-      opts: { handSize: opts.handSize || 7, clashRule: opts.clashRule || 'on' },
+      declared: {}, vulnerable: {}, pending: 0, phase: 'play', winner: null, scores: null, log: [], logSeq: 0, seq: 0, lastEvent: null,
+      opts: { handSize: opts.handSize || 7, clashRule: opts.clashRule || 'on', stacking: opts.stacking || 'on' },
     };
     for (const id of s.players) { s.hands[id] = []; drawCards(s, id, s.opts.handSize); }
     // first card: a number card
@@ -121,6 +125,15 @@ module.exports = {
 
     if (a.type === 'draw') {
       if (s.drawnCardId !== null) return 'You already drew — play it or pass';
+      if (s.pending > 0) {
+        const k = s.pending;
+        s.pending = 0;
+        drawCards(s, pid, k);
+        pushLog(s, `😵 ${name} takes ${k} cards!`);
+        ev(s, { type: 'take', player: pid, count: k });
+        endTurn(s, 1);
+        return;
+      }
       const [c] = drawCards(s, pid, 1);
       ev(s, { type: 'draw', player: pid });
       if (c && playable(s, c)) {
@@ -143,8 +156,10 @@ module.exports = {
       if (i < 0) return 'That card is not in your hand';
       const c = hand[i];
       if (s.drawnCardId !== null && c.id !== s.drawnCardId) return 'You can only play the card you just drew (or pass)';
-      if (!playable(s, c)) return `That doesn't match — play a ${COLOR_NAMES[s.color]} card or a ${top(s).value} card`;
-      if (c.color === 'wild' && !COLORS.includes(a.color)) return 'Pick a color for your Rainbow card';
+      if (!playable(s, c)) return s.pending > 0
+        ? `Stack a ${top(s).value === 'draw2' ? '+2 or ' : ''}+4 card, or take ${s.pending} cards from the deck`
+        : `That doesn't match — play a ${COLOR_NAMES[s.color]} card or a ${top(s).value} card`;
+      if (c.color === 'wild' && !COLORS.includes(a.color)) return 'Pick a color for your Color Change card';
       hand.splice(i, 1);
       s.discard.push(c);
       s.color = c.color === 'wild' ? a.color : c.color;
@@ -169,6 +184,9 @@ module.exports = {
       } else if (c.value === 'flip') {
         if (n === 2) steps = 2;
         else s.dir *= -1;
+      } else if ((c.value === 'draw2' || c.value === 'wild4') && s.opts.stacking === 'on') {
+        s.pending += c.value === 'draw2' ? 2 : 4;
+        pushLog(s, `🔥 ${s.names[s.players[idxStep(s, 1)]]} must stack or take ${s.pending}!`);
       } else if (c.value === 'draw2' || c.value === 'wild4') {
         const k = c.value === 'draw2' ? 2 : 4;
         const victim = s.players[idxStep(s, 1)];
@@ -225,6 +243,7 @@ module.exports = {
     return {
       players: s.players.map(id => ({ id, name: s.names[id], count: s.hands[id].length, vulnerable: !!s.vulnerable[id], declared: !!s.declared[id] })),
       hand: me ? s.hands[me] : null,
+      pending: s.pending,
       playable: myTurn ? s.hands[me].filter(c => (s.drawnCardId === null || c.id === s.drawnCardId) && playable(s, c)).map(c => c.id) : [],
       top: top(s), color: s.color, dir: s.dir, turnId: s.players[s.turn], drawnCardId: myTurn ? s.drawnCardId : null,
       deckCount: s.deck.length, phase: s.phase, winner: s.winner, scores: s.scores,

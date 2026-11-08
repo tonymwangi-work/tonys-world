@@ -81,8 +81,15 @@ async function waitFor(fn, ms = 15000) {
   await waitFor(() => a.state.players.length === 2);
   assert(!a.state.players.some(p => p.isBot), 'bots removed for Case Files');
   r = await a.call('room:start');
-  assert(r.ok, 'Case Files (co-op) started');
+  assert(r.ok, 'Case Files started');
+  await waitFor(() => a.state.view && a.state.view.phase === 'setup');
+  assert(a.state.view.cases.length === 3, 'setup screen lists 3 cases');
+  r = await b.call('game:action', { type: 'begin' });
+  assert(r.error, 'only host can begin the case');
+  await a.call('game:action', { type: 'setup', caseId: 'final-bow', mode: 'coop', clock: 10 });
+  await a.call('game:action', { type: 'begin' });
   await waitFor(() => a.state.view && a.state.view.case);
+  assert(a.state.view.mode === 'coop' && a.state.view.timeLeft > 590000, 'co-op case begun with a 10-minute clock');
   assert(!JSON.stringify(a.state.view).includes('"solution"'), 'solution hidden from players');
   for (const loc of ['dressing', 'stagedoor', 'office']) await a.call('game:action', { type: 'search', location: loc });
   await waitFor(() => b.state.view.file.found.length >= 10);
@@ -104,9 +111,10 @@ async function waitFor(fn, ms = 15000) {
   // ── Case Files race: wrong accusation knocks you out, right one wins
   await a.call('room:lobby');
   await a.call('room:select', { game: 'casefiles' });
-  await a.call('room:option', { key: 'caseId', value: 'silver-comet' });
-  await a.call('room:option', { key: 'mode', value: 'race' });
   r = await a.call('room:start');
+  await waitFor(() => a.state.view && a.state.view.phase === 'setup');
+  await a.call('game:action', { type: 'setup', caseId: 'silver-comet', mode: 'race' });
+  await a.call('game:action', { type: 'begin' });
   await waitFor(() => a.state.view && a.state.view.mode === 'race');
   await a.call('game:action', { type: 'search', location: 'comp7' });
   await waitFor(() => a.state.view.file.found.length > 2);
@@ -118,6 +126,41 @@ async function waitFor(fn, ms = 15000) {
   await a.call('game:action', { type: 'accuse', culprit: 'sam', weapon: 'insulin', motive: 'fraud' });
   await waitFor(() => a.state.view.phase === 'solved');
   assert(a.state.view.winner === a.state.you, 'race won by the correct detective');
+
+  // ── Color Clash stacking (rules engine directly)
+  const cc = require('../server/games/colorclash');
+  const st = cc.create([{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }, { id: 'z', name: 'Z' }], { handSize: 5, stacking: 'on', clashRule: 'off' });
+  st.turn = 0; st.color = 'red'; st.discard.push({ id: 900, color: 'red', value: '5' });
+  st.hands.x.push({ id: 901, color: 'red', value: 'draw2' });
+  st.hands.y = [{ id: 902, color: 'blue', value: 'draw2' }, { id: 903, color: 'blue', value: '1' }];
+  const zBefore = st.hands.z.length;
+  assert(!cc.action(st, 'x', { type: 'play', cardId: 901 }) && st.pending === 2, '+2 played, pending 2');
+  assert(cc.action(st, 'y', { type: 'play', cardId: 903 }), 'cannot play a normal card on a pending +2');
+  assert(!cc.action(st, 'y', { type: 'play', cardId: 902 }) && st.pending === 4, 'stacked +2 → pending 4');
+  st.hands.z = st.hands.z.filter(c => c.value !== 'draw2' && c.value !== 'wild4');
+  const zn = st.hands.z.length;
+  assert(!cc.action(st, 'z', { type: 'draw' }) && st.hands.z.length === zn + 4 && st.pending === 0 && st.players[st.turn] === 'x', 'next player took 4 and was skipped');
+
+  // ── Barrel Climb: level flow & scoring
+  await a.call('room:lobby');
+  await a.call('room:select', { game: 'barrel' });
+  await a.call('room:option', { key: 'levels', value: 1 });
+  r = await a.call('room:start');
+  assert(r.ok, 'Barrel Climb started');
+  await waitFor(() => a.state.view && a.state.view.phase === 'playing', 8000);
+  assert(a.state.view.phase === 'playing', 'countdown → playing');
+  let streamed = null; b.on('game:stream', m => { streamed = m; });
+  a.emit('game:stream', { x: 50, y: 540 });
+  await waitFor(() => streamed);
+  assert(streamed && streamed.d.x === 50, 'positions relayed to other players');
+  await a.call('game:action', { type: 'jumped' });
+  await a.call('game:action', { type: 'finish' });
+  await b.call('game:action', { type: 'finish' });
+  await waitFor(() => a.state.view.phase === 'results', 3000);
+  const sa = a.state.view.players.find(p => p.id === a.state.you), sb = a.state.view.players.find(p => p.id === b.state.you);
+  assert(sa.score > sb.score && sa.place === 1, `level ends when all finish; scores ${sa.score} vs ${sb.score}`);
+  await waitFor(() => a.state.view.phase === 'over', 10000);
+  assert(a.state.view.winner === a.state.you, 'Barrel Climb game over with a winner');
 
   // ── reconnect: Ben drops and rejoins with same token
   b.disconnect();

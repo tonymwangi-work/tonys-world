@@ -288,6 +288,8 @@
     const enough = count >= m.minPlayers && count <= m.maxPlayers;
     $('#game-setup', el).innerHTML = `
       <div class="setup-title">${info.emoji} ${esc(m.name)} <span class="muted">· ${m.minPlayers}–${m.maxPlayers} players</span></div>
+      ${r.selectedGame === 'casefiles' ? '<p class="muted">You\'ll pick the case together after starting: solve it as a team or race each other, with or without a clock.</p>' : ''}
+      ${r.selectedGame === 'barrel' ? '<p class="muted">Everyone plays at the same time. Works with keyboard or on-screen buttons on phones.</p>' : ''}
       <div class="options">${m.optionsSchema.map(o => `<label class="opt"><span>${esc(o.label)}</span>
         <select class="input" data-opt="${o.key}" ${api.isHost ? '' : 'disabled'}>${o.choices.map(c => `<option value="${esc(c.value)}" ${String(r.options[o.key]) === String(c.value) ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></label>`).join('')}</div>
       ${api.isHost

@@ -317,6 +317,14 @@ io.on('connection', socket => {
     afterChange(room);
   });
 
+  // high-frequency, non-authoritative updates (e.g. player positions in arcade games)
+  socket.on('game:stream', data => {
+    if (!room || !room.state || !data || typeof data !== 'object') return;
+    const mod = GAMES[room.game];
+    if (!mod.streams || !(room.participants || []).includes(player.id)) return;
+    socket.to(room.code).volatile.emit('game:stream', { id: player.id, d: data });
+  });
+
   socket.on('chat', text => {
     if (!room) return;
     const now = Date.now();
@@ -334,6 +342,17 @@ io.on('connection', socket => {
     broadcast(room);
   });
 });
+
+// game clocks (timers, countdowns, level changes)
+setInterval(() => {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (!room.state) continue;
+    const mod = GAMES[room.game];
+    if (!mod.tick) continue;
+    try { if (mod.tick(room.state, now, ctxFor(room, null))) afterChange(room); } catch (e) { console.error('tick error', e); }
+  }
+}, 250);
 
 // housekeeping: host hand-off, auto-play for disconnected players, cleanup
 setInterval(() => {

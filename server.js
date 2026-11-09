@@ -23,33 +23,41 @@ app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
 //   TURN_URL + TURN_USERNAME + TURN_CREDENTIAL            (any other TURN server)
 const STUN = [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }];
 let turnCache = { at: 0, servers: null };
+let turnStatus = 'not configured: add CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN on Render';
+const env = k => (process.env[k] || '').trim().replace(/^["']|["']$/g, '');
 async function turnServers() {
   if (turnCache.servers && Date.now() - turnCache.at < 6 * 3600 * 1000) return turnCache.servers;
   let servers = [];
   try {
-    if (process.env.CLOUDFLARE_TURN_KEY_ID && process.env.CLOUDFLARE_TURN_API_TOKEN) {
-      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(process.env.CLOUDFLARE_TURN_KEY_ID)}/credentials/generate`, {
+    if (env('CLOUDFLARE_TURN_KEY_ID') || env('CLOUDFLARE_TURN_API_TOKEN')) {
+      if (!env('CLOUDFLARE_TURN_KEY_ID')) throw new Error('CLOUDFLARE_TURN_KEY_ID is missing on Render');
+      if (!env('CLOUDFLARE_TURN_API_TOKEN')) throw new Error('CLOUDFLARE_TURN_API_TOKEN is missing on Render');
+      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env('CLOUDFLARE_TURN_KEY_ID'))}/credentials/generate`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${env('CLOUDFLARE_TURN_API_TOKEN')}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttl: 86400 }),
       });
-      if (!r.ok) throw new Error('Cloudflare TURN ' + r.status);
+      if (r.status === 401 || r.status === 403) throw new Error(`Cloudflare rejected the API token (${r.status}). Copy the TURN app's API token again`);
+      if (r.status === 404) throw new Error('Cloudflare says that Turn Token ID does not exist (404). Check CLOUDFLARE_TURN_KEY_ID');
+      if (!r.ok) throw new Error('Cloudflare TURN error ' + r.status);
       const j = await r.json();
       servers = [].concat(j.iceServers || []);
-    } else if (process.env.METERED_TURN_URL) {
-      const r = await fetch(process.env.METERED_TURN_URL);
-      if (!r.ok) throw new Error('Metered TURN ' + r.status);
+      if (!servers.length) throw new Error('Cloudflare returned no servers');
+    } else if (env('METERED_TURN_URL')) {
+      const r = await fetch(env('METERED_TURN_URL'));
+      if (!r.ok) throw new Error('Metered TURN error ' + r.status);
       servers = [].concat(await r.json());
     }
-  } catch (e) { console.warn('TURN credentials failed:', e.message); }
-  if (process.env.TURN_URL) servers.push({ urls: process.env.TURN_URL.split(','), username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+    if (servers.length) turnStatus = 'ok';
+  } catch (e) { turnStatus = e.message; console.warn('TURN credentials failed:', e.message); }
+  if (env('TURN_URL')) { servers.push({ urls: env('TURN_URL').split(','), username: env('TURN_USERNAME'), credential: env('TURN_CREDENTIAL') }); turnStatus = 'ok'; }
   if (servers.length) turnCache = { at: Date.now(), servers };
   return servers;
 }
 app.get('/api/ice', async (_req, res) => {
   const turn = await turnServers();
   res.set('Cache-Control', 'no-store');
-  res.json({ iceServers: [...STUN, ...turn], relay: turn.length > 0 });
+  res.json({ relay: turn.length > 0, relayStatus: turn.length ? 'ok' : turnStatus, iceServers: [...STUN, ...turn] });
 });
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';

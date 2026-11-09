@@ -32,16 +32,23 @@ async function turnServers() {
     if (env('CLOUDFLARE_TURN_KEY_ID') || env('CLOUDFLARE_TURN_API_TOKEN')) {
       if (!env('CLOUDFLARE_TURN_KEY_ID')) throw new Error('CLOUDFLARE_TURN_KEY_ID is missing on Render');
       if (!env('CLOUDFLARE_TURN_API_TOKEN')) throw new Error('CLOUDFLARE_TURN_API_TOKEN is missing on Render');
-      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env('CLOUDFLARE_TURN_KEY_ID'))}/credentials/generate`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${env('CLOUDFLARE_TURN_API_TOKEN')}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ttl: 86400 }),
-      });
+      // Cloudflare has two endpoints for this; try the newer one first, then the older one
+      const base = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env('CLOUDFLARE_TURN_KEY_ID'))}/credentials/`;
+      let r = null;
+      for (const path of ['generate-ice-servers', 'generate']) {
+        r = await fetch(base + path, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${env('CLOUDFLARE_TURN_API_TOKEN')}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ttl: 86400 }),
+        });
+        if (r.status !== 404) break;
+      }
       if (r.status === 401 || r.status === 403) throw new Error(`Cloudflare rejected the API token (${r.status}). Copy the TURN app's API token again`);
-      if (r.status === 404) throw new Error('Cloudflare says that Turn Token ID does not exist (404). Check CLOUDFLARE_TURN_KEY_ID');
+      if (r.status === 404) throw new Error('Cloudflare says that Turn Token ID does not exist (404). Check CLOUDFLARE_TURN_KEY_ID: use the TURN app\'s "Turn Token ID", not your Account ID');
       if (!r.ok) throw new Error('Cloudflare TURN error ' + r.status);
       const j = await r.json();
-      servers = [].concat(j.iceServers || []);
+      // keep only entries with usable URLs (the newer endpoint also lists port-53 URLs that browsers block)
+      servers = [].concat(j.iceServers || []).map(x => ({ ...x, urls: [].concat(x.urls).filter(u => !/:53(\?|$)/.test(u)) })).filter(x => x.urls.length);
       if (!servers.length) throw new Error('Cloudflare returned no servers');
     } else if (env('METERED_TURN_URL')) {
       const r = await fetch(env('METERED_TURN_URL'));

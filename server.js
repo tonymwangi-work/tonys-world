@@ -15,11 +15,41 @@ const rooms = new Map();
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
-// ICE servers for voice/video. STUN is free; set TURN_URL/TURN_USERNAME/TURN_CREDENTIAL for tough networks.
-app.get('/api/ice', (_req, res) => {
-  const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
-  if (process.env.TURN_URL) ice.push({ urls: process.env.TURN_URL.split(','), username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
-  res.json({ iceServers: ice });
+// ICE servers for voice/video calls.
+// STUN alone only works when both players' networks allow direct connections. A TURN relay makes
+// calls work everywhere. Supported (set on Render → Environment):
+//   CLOUDFLARE_TURN_KEY_ID + CLOUDFLARE_TURN_API_TOKEN   (Cloudflare Realtime TURN, generous free tier)
+//   METERED_TURN_URL  (the "credentials" URL from metered.ca, includes your apiKey)
+//   TURN_URL + TURN_USERNAME + TURN_CREDENTIAL            (any other TURN server)
+const STUN = [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }];
+let turnCache = { at: 0, servers: null };
+async function turnServers() {
+  if (turnCache.servers && Date.now() - turnCache.at < 6 * 3600 * 1000) return turnCache.servers;
+  let servers = [];
+  try {
+    if (process.env.CLOUDFLARE_TURN_KEY_ID && process.env.CLOUDFLARE_TURN_API_TOKEN) {
+      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(process.env.CLOUDFLARE_TURN_KEY_ID)}/credentials/generate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttl: 86400 }),
+      });
+      if (!r.ok) throw new Error('Cloudflare TURN ' + r.status);
+      const j = await r.json();
+      servers = [].concat(j.iceServers || []);
+    } else if (process.env.METERED_TURN_URL) {
+      const r = await fetch(process.env.METERED_TURN_URL);
+      if (!r.ok) throw new Error('Metered TURN ' + r.status);
+      servers = [].concat(await r.json());
+    }
+  } catch (e) { console.warn('TURN credentials failed:', e.message); }
+  if (process.env.TURN_URL) servers.push({ urls: process.env.TURN_URL.split(','), username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+  if (servers.length) turnCache = { at: Date.now(), servers };
+  return servers;
+}
+app.get('/api/ice', async (_req, res) => {
+  const turn = await turnServers();
+  res.set('Cache-Control', 'no-store');
+  res.json({ iceServers: [...STUN, ...turn], relay: turn.length > 0 });
 });
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';

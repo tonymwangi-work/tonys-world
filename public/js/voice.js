@@ -17,10 +17,23 @@
   const channelLabel = ch => !ch ? '' : ch === 'room' ? '🔊 Room call' : ch === 'team:A' ? '🔒 Red Team (private)' : '🔒 Blue Team (private)';
 
   async function iceServers() {
-    if (V.ice) return V.ice;
-    try { V.ice = (await (await fetch('/api/ice')).json()).iceServers; } catch { V.ice = [{ urls: 'stun:stun.l.google.com:19302' }]; }
+    try {
+      const j = await (await fetch('/api/ice', { cache: 'no-store' })).json();
+      V.ice = j.iceServers; V.relay = !!j.relay;
+    } catch { V.ice = V.ice || [{ urls: 'stun:stun.l.google.com:19302' }]; }
     return V.ice;
   }
+  // phones (esp. iPhone) only let audio play after a tap, so keep audio elements in the page and
+  // "unlock" them on the next tap anywhere
+  const audioBox = document.createElement('div');
+  audioBox.style.display = 'none';
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(audioBox));
+  if (document.body) document.body.appendChild(audioBox);
+  const unlockAudio = () => Object.values(V.peers).forEach(p => { if (p.audio.srcObject && p.audio.paused) p.audio.play().catch(() => {}); });
+  document.addEventListener('pointerdown', unlockAudio, true);
+  const early = {}; // ICE candidates that arrive before the offer
+  const tries = {};
+  let warned = false;
 
   V.init = s => {
     socket = s;
@@ -86,17 +99,33 @@
   // ── peer connections
   function makePeer(id, initiator) {
     const pc = new RTCPeerConnection({ iceServers: V.ice });
-    const peer = { id, pc, initiator, pending: [], audio: new Audio(), video: null, aT: null, vT: null, stream: new MediaStream() };
+    const peer = { id, pc, initiator, pending: early[id] || [], audio: document.createElement('audio'), video: null, aT: null, vT: null, stream: new MediaStream() };
+    delete early[id];
     peer.audio.autoplay = true;
     peer.audio.setAttribute('playsinline', '');
+    audioBox.appendChild(peer.audio);
     V.peers[id] = peer;
+    // if it hasn't connected after a while, retry once, then explain
+    peer.timer = setTimeout(() => {
+      if (!V.on || V.peers[id] !== peer || pc.connectionState === 'connected') return;
+      tries[id] = (tries[id] || 0) + 1;
+      if (tries[id] <= 2) { closePeer(id); if (initiator) connectTo(id); return; }
+      peer.blocked = true;
+      renderDock();
+      if (!warned) {
+        warned = true;
+        TW.toast(V.relay ? "Can't reach this player. One of your networks is blocking calls." : "Can't connect directly. Your networks are blocking direct calls. The host needs to add a free TURN relay (see README).", 'error', 8000);
+      }
+    }, 15000);
     pc.onicecandidate = e => { if (e.candidate) socket.emit('rtc:signal', { to: id, data: { ice: e.candidate } }); };
     pc.ontrack = e => {
       if (e.track.kind === 'audio') { peer.audio.srcObject = new MediaStream([e.track]); peer.audio.play().catch(() => {}); }
       else { peer.videoStream = new MediaStream([e.track]); renderDock(); }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' && V.on) {
+      if (pc.connectionState === 'connected') { clearTimeout(peer.timer); tries[id] = 0; peer.blocked = false; peer.audio.play().catch(() => {}); }
+      if (pc.connectionState === 'failed' && V.on && (tries[id] || 0) < 2) {
+        tries[id] = (tries[id] || 0) + 1;
         closePeer(id);
         if (initiator) setTimeout(() => connectTo(id), 1000);
       }
@@ -134,7 +163,7 @@
         } else if (peer) await peer.pc.setRemoteDescription(data.sdp);
         if (peer) { for (const c of peer.pending) await peer.pc.addIceCandidate(c).catch(() => {}); peer.pending = []; }
       } else if (data.ice) {
-        if (!peer) return;
+        if (!peer) { (early[from] = early[from] || []).push(data.ice); return; }
         if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.ice).catch(() => {});
         else peer.pending.push(data.ice);
       }
@@ -144,7 +173,9 @@
     const p = V.peers[id];
     if (!p) return;
     try { p.pc.close(); } catch { /* ignore */ }
+    clearTimeout(p.timer);
     p.audio.srcObject = null;
+    p.audio.remove();
     delete V.peers[id];
     renderDock();
   }
@@ -239,7 +270,7 @@
       return `<div class="call-tile ${same ? '' : 'other'} ${state !== 'connected' ? 'wait' : ''}" data-tile="${p.id}" style="--pc:${esc(p.color)}">
         ${showVid ? `<div class="ct-vid" data-v="${p.id}"></div>` : `<span class="ct-av">${esc(p.avatar)}</span>`}
         <span class="ct-name">${mine ? 'You' : esc(p.name)} ${p.mic ? '' : '🔇'}${!same ? ' 🔒' : ''}</span>
-        ${state !== 'connected' && !mine ? '<span class="ct-wait">connecting…</span>' : ''}
+        ${state !== 'connected' && !mine ? `<span class="ct-wait">${peer && peer.blocked ? '⚠️ blocked by network' : 'connecting…'}</span>` : ''}
       </div>`;
     }).join('');
     dock.innerHTML = `<div class="call-head" title="Drag to move"><span>⠿ ${channelLabel(V.channel)}</span><button class="call-min" data-call="min" title="${V.collapsed ? 'Expand' : 'Minimise'}">${V.collapsed ? '▴' : '▾'}</button></div>

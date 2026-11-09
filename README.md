@@ -43,7 +43,14 @@ Note: on Render's free plan the server goes to sleep after 15 minutes without vi
 Other hosts work too (Railway, Fly.io, Glitch): any service that runs `npm start` and supports WebSockets.
 
 ## Voice & video
-Calls are peer-to-peer (WebRTC); the server only passes messages between browsers. On most home Wi-Fi this works out of the box. Some mobile networks and strict school/office networks block direct connections; for those, add a TURN server (e.g. a free Metered.ca or Cloudflare account) by setting these environment variables on Render: `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL`.
+Calls are peer-to-peer (WebRTC); the server only passes messages between browsers. Many home and mobile networks can't connect directly, so for calls to work everywhere add a free **TURN relay**:
+
+**Cloudflare (recommended, large free tier):**
+1. Sign in at https://dash.cloudflare.com, open **Realtime** (also called *Calls*) → **TURN Server** → **Create**.
+2. Copy the **Turn Token ID** and the **API Token** it shows.
+3. On Render → your service → **Environment**, add `CLOUDFLARE_TURN_KEY_ID` (the Token ID) and `CLOUDFLARE_TURN_API_TOKEN` (the API token), then save (Render redeploys).
+
+Alternatives: `METERED_TURN_URL` (the credentials URL from a free metered.ca account), or `TURN_URL` + `TURN_USERNAME` + `TURN_CREDENTIAL` for any TURN server. Visit `/api/ice` on your site: `"relay": true` means it's working.
 
 ## Project layout
 

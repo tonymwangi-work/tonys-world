@@ -9,7 +9,11 @@ function newFile() {
   return { found: [], searched: [], asked: [], notes: [], actions: 0, log: [], logSeq: 0 };
 }
 function caseOf(s) { return byId[s.caseId]; }
-function fileKey(s, pid) { return s.mode === 'coop' ? 'team' : pid; }
+// whose case file a player works in: the shared team file (co-op), their team's file (team race) or their own (race)
+function fileKey(s, pid) { return s.mode === 'coop' ? 'team' : s.teams ? 'T' + s.team[pid] : pid; }
+const TEAM_LABEL = { TA: '🔴 Red Team', TB: '🔵 Blue Team' };
+function keyLabel(s, key) { return TEAM_LABEL[key] || s.names[key] || 'Team'; }
+function raceKeys(s) { return [...new Set(s.players.map(id => fileKey(s, id)))]; }
 function reveal(s, file, pid) {
   // reveal every evidence item at searched locations whose requirements are now met
   const c = caseOf(s);
@@ -49,18 +53,24 @@ module.exports = {
   minPlayers: 1,
   maxPlayers: 10,
   supportsBots: false,
+  supportsTeams: true,
+  teamNote: 'With teams on, pick "Race each other" and it becomes Red vs Blue: each team shares a case file and talks in its own private voice channel.',
   optionsSchema: [],
   defaultOptions: () => ({}),
 
-  create(players) {
+  create(players, opts = {}) {
     return {
-      caseId: CASES[0].id, mode: 'coop', clock: 0,
+      caseId: CASES[0].id, mode: opts.teams ? 'race' : 'coop', clock: 0, teams: !!opts.teams,
+      team: Object.fromEntries(players.map(p => [p.id, p.team])),
       players: players.map(p => p.id), names: Object.fromEntries(players.map(p => [p.id, p.name])),
-      files: {}, votes: {}, accused: {}, phase: 'setup', result: null, winner: null, noteSeq: 0, deadline: null,
+      files: {}, votes: {}, accused: {}, out: {}, practice: {}, watch: {}, phase: 'setup', result: null, winner: null, noteSeq: 0, deadline: null,
     };
   },
   isOver: s => s.phase === 'solved',
   turnPlayer: () => null,
+
+  // team race: each team talks privately until it has made its accusation
+  privateTalk: (s, pid) => s.teams && s.mode === 'race' && s.phase === 'investigating' && !s.out[fileKey(s, pid)],
 
   tick(s, now) {
     if (s.phase !== 'investigating' || !s.deadline || now < s.deadline) return false;
@@ -83,7 +93,7 @@ module.exports = {
       }
       if (a.type === 'begin') {
         if (!ctx.isHost) return 'Waiting for the host to begin';
-        const keys = s.mode === 'coop' ? ['team'] : s.players;
+        const keys = s.mode === 'coop' ? ['team'] : raceKeys(s);
         for (const k of keys) { s.files[k] = newFile(); reveal(s, s.files[k]); }
         s.phase = 'investigating';
         s.deadline = s.clock ? Date.now() + s.clock * 60000 : null;
@@ -92,11 +102,19 @@ module.exports = {
       return 'Choose a case first';
     }
     const c = caseOf(s);
-    if (s.mode === 'race' && s.accused[pid]) return 'You already made your accusation';
-    const file = s.files[fileKey(s, pid)];
+    const key = fileKey(s, pid);
+    const file = s.files[key];
     const name = s.names[pid];
+    const isOut = s.mode === 'race' && s.out[key];
 
     switch (a.type) {
+      case 'watch': {
+        if (!isOut) return 'You can watch others after your accusation';
+        if (a.target === null || a.target === undefined) { delete s.watch[pid]; return; }
+        if (!s.files[a.target] || a.target === key) return 'Nothing to watch there';
+        s.watch[pid] = a.target;
+        return;
+      }
       case 'search': {
         const loc = c.locations.find(l => l.id === a.location);
         if (!loc) return 'Unknown location';
@@ -137,6 +155,7 @@ module.exports = {
         const ok = c.suspects.some(x => x.id === a.culprit) && c.weapons.some(x => x.id === a.weapon) && c.motives.some(x => x.id === a.motive);
         if (!ok) return 'Choose a suspect, a weapon and a motive';
         const vote = { culprit: a.culprit, weapon: a.weapon, motive: a.motive };
+        const correct = ['culprit', 'weapon', 'motive'].every(k => vote[k] === c.solution[k]);
         if (s.mode === 'coop') {
           s.votes[pid] = vote;
           pushLog(file, `⚖️ ${name} locked in an accusation`);
@@ -144,17 +163,22 @@ module.exports = {
           if (voters.length && voters.every(id => s.votes[id])) resolveCoop(s);
           return;
         }
-        // race
-        s.accused[pid] = vote;
-        const correct = ['culprit', 'weapon', 'motive'].every(k => vote[k] === c.solution[k]);
+        if (isOut) { // practice guess after being knocked out: just tells you if you were right
+          s.practice[key] = { vote, correct, by: pid };
+          pushLog(file, `🎯 ${name} made a practice accusation (doesn't count)`);
+          return;
+        }
+        s.accused[key] = { ...vote, by: pid };
         if (correct) {
           s.phase = 'solved';
-          s.winner = pid;
+          s.winner = key;
           s.result = { correct: 3, rank: rankFor(3, file.actions, c.par) };
-        } else {
-          const remaining = s.players.filter(id => !s.accused[id] && ctx.humans.includes(id));
-          if (!remaining.length) { s.phase = 'solved'; s.result = { correct: 0, rank: rankFor(0, 0, c.par) }; }
+          return;
         }
+        s.out[key] = true;
+        pushLog(file, `❌ ${name}'s accusation was wrong`);
+        const alive = raceKeys(s).filter(k => !s.out[k] && s.players.some(id => fileKey(s, id) === k && ctx.humans.includes(id)));
+        if (!alive.length) { s.phase = 'solved'; s.result = { correct: 0, rank: rankFor(0, 0, c.par) }; }
         return;
       }
       case 'reveal': {
@@ -171,18 +195,25 @@ module.exports = {
   view(s, pid) {
     if (s.phase === 'setup') {
       return {
-        phase: 'setup', setup: { caseId: s.caseId, mode: s.mode, clock: s.clock },
+        phase: 'setup', setup: { caseId: s.caseId, mode: s.mode, clock: s.clock }, teams: s.teams,
         cases: CASES.map(c => ({ id: c.id, title: c.title, emoji: c.emoji, difficulty: c.difficulty, tagline: c.tagline, suspects: c.suspects.length, victim: c.victim.name })),
         players: s.players.map(id => ({ id, name: s.names[id] })),
       };
     }
     const c = caseOf(s);
-    const key = s.players.includes(pid) ? fileKey(s, pid) : (s.mode === 'coop' ? 'team' : null);
-    const file = key ? s.files[key] : null;
-    const found = new Set(file ? file.found : []);
+    const isPlayer = s.players.includes(pid);
+    const myKey = isPlayer ? fileKey(s, pid) : null;
     const solved = s.phase === 'solved';
+    // which file to show: your own, the one you're watching, or (spectators) the first one
+    let showKey = myKey;
+    if (isPlayer && s.watch[pid] && s.files[s.watch[pid]]) showKey = s.watch[pid];
+    if (!isPlayer) showKey = s.mode === 'coop' ? 'team' : (solved ? raceKeys(s)[0] : null);
+    const file = showKey ? s.files[showKey] : null;
+    const found = new Set(file ? file.found : []);
     const v = {
-      mode: s.mode, phase: s.phase,
+      mode: s.mode, phase: s.phase, teams: s.teams, myKey, myLabel: myKey ? keyLabel(s, myKey) : null,
+      watching: showKey !== myKey && isPlayer ? showKey : null, watchingLabel: showKey && showKey !== myKey ? keyLabel(s, showKey) : null,
+      out: !!(myKey && s.out[myKey]), practice: myKey ? s.practice[myKey] || null : null,
       case: {
         id: c.id, title: c.title, tagline: c.tagline, emoji: c.emoji, difficulty: c.difficulty, intro: c.intro, victim: c.victim, par: c.par,
         locations: c.locations,
@@ -201,10 +232,10 @@ module.exports = {
         searched: file.searched, actions: file.actions, notes: file.notes, log: file.log.slice(-25), lastFound: file.lastFound || null,
       },
       votes: s.mode === 'coop' ? Object.keys(s.votes) : [],
-      myVote: s.votes[pid] || s.accused[pid] || null,
-      accused: Object.keys(s.accused),
-      players: s.players.map(id => ({ id, name: s.names[id], actions: s.mode === 'race' ? s.files[id].actions : undefined, found: s.mode === 'race' ? s.files[id].found.length : undefined })),
-      winner: s.winner,
+      myVote: s.mode === 'coop' ? s.votes[pid] || null : (myKey && s.accused[myKey]) || null,
+      racers: s.mode === 'race' ? raceKeys(s).map(k => ({ key: k, label: keyLabel(s, k), found: s.files[k] ? s.files[k].found.length : 0, actions: s.files[k] ? s.files[k].actions : 0, out: !!s.out[k] })) : [],
+      winner: s.winner, winnerLabel: s.winner ? keyLabel(s, s.winner) : null, iWon: !!(s.winner && s.winner === myKey),
+      players: s.players.map(id => ({ id, name: s.names[id] })),
       timeLeft: s.deadline && s.phase !== 'solved' ? Math.max(0, s.deadline - Date.now()) : null,
       clock: s.clock,
       totalEvidence: c.evidence.length,
@@ -212,7 +243,9 @@ module.exports = {
     if (solved) {
       v.solution = c.solution;
       v.result = s.result;
-      v.allVotes = s.mode === 'coop' ? s.votes : s.accused;
+      v.allVotes = s.mode === 'coop'
+        ? Object.fromEntries(Object.entries(s.votes).map(([id, x]) => [s.names[id], x]))
+        : Object.fromEntries(Object.entries(s.accused).map(([k, x]) => [keyLabel(s, k), x]));
     }
     return v;
   },

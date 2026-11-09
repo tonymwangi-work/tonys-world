@@ -120,9 +120,18 @@ async function waitFor(fn, ms = 15000) {
   await waitFor(() => a.state.view.file.found.length > 2);
   assert(b.state.view.file.found.length === 2, 'race files are private');
   r = await b.call('game:action', { type: 'accuse', culprit: 'nora', weapon: 'insulin', motive: 'shares' });
-  await waitFor(() => b.state.view.accused.includes(b.state.you));
+  await waitFor(() => b.state.view.out);
+  assert(b.state.view.out, 'wrong accusation knocks Ben out');
   r = await b.call('game:action', { type: 'search', location: 'comp8' });
-  assert(r.error, 'eliminated player cannot keep investigating');
+  assert(r.ok, 'knocked-out player can keep investigating (practice)');
+  r = await b.call('game:action', { type: 'accuse', culprit: 'sam', weapon: 'insulin', motive: 'fraud' });
+  await waitFor(() => b.state.view.practice);
+  assert(b.state.view.practice.correct && b.state.view.phase === 'investigating', 'practice accusation is right but does not win');
+  await b.call('game:action', { type: 'watch', target: a.state.you });
+  await waitFor(() => b.state.view.watching === a.state.you);
+  assert(b.state.view.file.found.length === a.state.view.file.found.length, 'Ben can watch Ana\'s file');
+  r = await b.call('game:action', { type: 'search', location: 'cabin' });
+  assert(r.ok && a.state.view.file.searched.indexOf('cabin') === -1, 'watching is read-only for the watched file');
   await a.call('game:action', { type: 'accuse', culprit: 'sam', weapon: 'insulin', motive: 'fraud' });
   await waitFor(() => a.state.view.phase === 'solved');
   assert(a.state.view.winner === a.state.you, 'race won by the correct detective');
@@ -162,6 +171,59 @@ async function waitFor(fn, ms = 15000) {
   await waitFor(() => a.state.view.phase === 'over', 10000);
   assert(a.state.view.winner === a.state.you, 'Barrel Climb game over with a winner');
 
+  // ── Teams + private voice channels + call signaling
+  const c = client('Cleo'), d = client('Dan');
+  await c.call('room:join', { code, name: 'Cleo', token: c.token });
+  await d.call('room:join', { code, name: 'Dan', token: d.token });
+  await a.call('room:lobby');
+  await a.call('room:select', { game: 'hilo' });
+  await a.call('room:teams', { on: true });
+  await waitFor(() => a.state.teamsOn && a.state.players.length === 4);
+  const teamOf = n => a.state.players.find(p => p.name === n).team;
+  assert(teamOf('Ana') !== teamOf('Ben') && a.state.players.every(p => p.team), 'teams auto-balanced: ' + a.state.players.map(p => p.name + ':' + p.team).join(' '));
+  for (const s of [a, b, c, d]) await s.call('rtc:join', { mic: true });
+  await waitFor(() => a.state.players.every(p => p.inCall));
+  assert(a.state.players.every(p => p.channel === 'room'), 'everyone in the room call in the lobby');
+  let sig = null; d.on('rtc:signal', m => { sig = m; });
+  c.emit('rtc:signal', { to: d.state.you, data: { hello: 1 } });
+  await waitFor(() => sig);
+  assert(sig && sig.from === c.state.you && sig.data.hello === 1, 'call signaling relayed peer to peer');
+  r = await a.call('room:start');
+  assert(r.ok, 'Higher or Lower (teams) started');
+  await waitFor(() => a.state.view && a.state.view.units);
+  const chans = () => Object.fromEntries(a.state.players.map(p => [p.name, p.channel]));
+  assert(chans().Ana === 'team:' + teamOf('Ana') && chans().Ben === 'team:' + teamOf('Ben'), 'teams moved to private channels: ' + JSON.stringify(chans()));
+  r = await a.call('game:action', { type: 'guess', choice: 'higher' });
+  await waitFor(() => a.state.players.find(p => p.name === 'Ana').channel === 'room');
+  const anaMate = a.state.players.find(p => p.team === teamOf('Ana') && p.name !== 'Ana');
+  assert(chans().Ana === 'room' && chans()[anaMate.name] === 'room' && chans().Ben.startsWith('team:'), 'team that locked in goes back to the room call; other team stays private');
+  r = await b.call('game:action', { type: 'guess', choice: 'lower' });
+  await waitFor(() => a.state.view.phase === 'reveal');
+  assert(a.state.view.phase === 'reveal' && Object.values(chans()).every(ch => ch === 'room'), 'reveal: everyone back in the room call');
+  assert(a.state.view.right.value > 0, 'hidden value revealed');
+  await a.call('room:lobby');
+  await a.call('room:teams', { on: false });
+  c.disconnect(); d.disconnect();
+  await waitFor(() => a.state.players.filter(p => p.connected).length === 2);
+
+  // ── Higher or Lower take-turns with a bot, play to the end
+  await a.call('room:addBot');
+  await a.call('room:option', { key: 'mode', value: 'turns' });
+  r = await a.call('room:start');
+  assert(r.ok, 'Higher or Lower (take turns) started');
+  await waitFor(() => a.state.view && a.state.view.units);
+  assert(a.state.view.right.value === undefined, 'next value hidden while guessing');
+  let hl = 0;
+  while (a.state.view.phase !== 'over' && hl < 400) {
+    for (const p of [a, b]) {
+      const v = p.state.view;
+      if (!v) continue;
+      if (v.phase === 'guess' && v.turnUnit === p.state.you) { await p.call('game:action', { type: 'guess', choice: Math.random() < 0.5 ? 'higher' : 'lower' }); hl++; }
+    }
+    await sleep(100);
+  }
+  assert(a.state.view.phase === 'over', `Higher or Lower game finished (${hl} human guesses, winner ${a.state.view.winner})`);
+
   // ── reconnect: Ben drops and rejoins with same token
   b.disconnect();
   await waitFor(() => a.state.players.find(p => p.name === 'Ben' && !p.connected));
@@ -169,7 +231,7 @@ async function waitFor(fn, ms = 15000) {
   const b2 = client('Ben'); b2.token = b.token;
   r = await b2.call('room:join', { code, name: 'Ben', token: b.token });
   await waitFor(() => b2.state);
-  assert(r.ok && b2.state.players.length === 2 && b2.state.you === b.state.you, 'Ben rejoined the same seat');
+  assert(r.ok && b2.state.you === b.state.you && b2.state.players.filter(p => p.name === 'Ben').length === 1, 'Ben rejoined the same seat');
 
   console.log('\n🎉 All smoke tests passed');
   process.exit(0);

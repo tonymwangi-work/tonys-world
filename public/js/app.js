@@ -45,6 +45,7 @@
     player(id) { return S.room && S.room.players.find(p => p.id === id); },
   };
   TW.api = api;
+  TW.voice.init(socket);
 
   const inviteLink = code => `${location.origin}${location.pathname}?room=${code}`;
   async function copy(text, label) {
@@ -147,8 +148,10 @@
   }
   function leaveRoom() {
     socket.emit('room:leave', {}, () => {});
+    TW.voice.leave();
     S.room = null; S.chat = []; S.lastRoom = null; S.joinCode = '';
     store.del('tw_room');
+    TW.voice.onRoom(null);
     history.replaceState(null, '', location.pathname);
     render();
   }
@@ -210,6 +213,8 @@
     return r.players.map(p => `<li class="player ${p.connected ? '' : 'offline'}" style="--pc:${esc(p.color)}">
       <span class="p-av">${esc(p.avatar)}</span>
       <span class="p-name">${esc(p.name)}${p.id === r.you ? ' <em>(you)</em>' : ''}</span>
+      ${p.team ? `<span class="tag tag-team-${p.team}">${p.team === 'A' ? 'RED' : 'BLUE'}</span>` : ''}
+      ${p.inCall ? `<span class="tag tag-call" title="In the call">${p.mic ? '🎙️' : '🔇'}</span>` : ''}
       ${p.isHost ? '<span class="tag tag-host" title="Host">👑</span>' : ''}
       ${p.isBot && !p.ghost ? '<span class="tag">BOT</span>' : ''}
       ${!p.connected ? '<span class="tag tag-off">offline</span>' : ''}
@@ -234,6 +239,7 @@
         <section class="card players-card">
           <div class="card-head"><h3>Players <span id="pcount"></span></h3><button class="btn btn-ghost btn-sm" id="add-bot">🤖 Add bot</button></div>
           <ul class="players" id="players"></ul>
+          <div id="teams-box"></div>
         </section>
         <section class="card games-card">
           <div class="card-head"><h3>Choose a game</h3><span class="muted" id="host-note"></span></div>
@@ -253,6 +259,12 @@
     $('#players', el).addEventListener('click', e => {
       const b = e.target.closest('[data-kick]');
       if (b) api.emit('room:remove', { id: b.dataset.kick });
+    });
+    $('#teams-box', el).addEventListener('click', e => {
+      const t = e.target.closest('[data-teams]');
+      if (t) return api.emit('room:teams', { on: t.dataset.teams === 'on' });
+      const m = e.target.closest('[data-move]');
+      if (m) { const [id, team] = m.dataset.move.split(':'); api.emit('room:setTeam', { id, team }); }
     });
     $('#game-grid', el).addEventListener('click', e => {
       const b = e.target.closest('[data-game]');
@@ -275,6 +287,19 @@
     $('#big-code', el).innerHTML = r.code.split('').map(c => `<span>${esc(c)}</span>`).join('');
     $('#players', el).innerHTML = playersHTML(false);
     $('#pcount', el).textContent = `(${r.players.length})`;
+    const tb = $('#teams-box', el);
+    if (!r.meta.supportsTeams) tb.innerHTML = '';
+    else if (!r.teamsOn) {
+      tb.innerHTML = `<div class="teams-off">${api.isHost ? '<button class="btn btn-ghost btn-sm" data-teams="on">👥 Play in teams</button>' : ''}<p class="muted small">${esc(r.meta.teamNote)}</p></div>`;
+    } else {
+      const col = (t, label) => `<div class="team-col team-${t}"><h4>${label}</h4>${r.players.filter(p => p.team === t).map(p => {
+        const canMove = p.id === r.you || api.isHost;
+        return `<div class="team-p" style="--pc:${esc(p.color)}"><span>${esc(p.avatar)} ${esc(p.name)}${p.id === r.you ? ' (you)' : ''}</span>${canMove ? `<button data-move="${p.id}:${t === 'A' ? 'B' : 'A'}" title="Switch team">⇄</button>` : ''}</div>`;
+      }).join('') || '<p class="muted small">Empty</p>'}</div>`;
+      tb.innerHTML = `<div class="teams-on"><div class="team-cols">${col('A', '🔴 Red Team')}${col('B', '🔵 Blue Team')}</div>
+        <p class="muted small">🔒 During team play, each team gets a private voice channel. ${esc(r.meta.teamNote)}</p>
+        ${api.isHost ? '<button class="btn btn-ghost btn-sm" data-teams="off">Turn teams off</button>' : ''}</div>`;
+    }
     $('#add-bot', el).hidden = !(api.isHost && r.meta.supportsBots);
     $('#host-note', el).textContent = api.isHost ? 'You are the host' : `${(r.players.find(p => p.isHost) || {}).name || 'Host'} picks the game`;
     $('#game-grid', el).innerHTML = TW.CATALOG.map(g => `<button class="game-tile ${g.id === r.selectedGame ? 'selected' : ''} ${g.ready ? '' : 'soon'}" data-game="${g.id}" style="--accent:${g.accent}">
@@ -350,7 +375,7 @@
   socket.on('disconnect', () => {
     if (!$('.conn-banner')) document.body.appendChild(h('<div class="conn-banner">Reconnecting… 🔌</div>'));
   });
-  socket.on('room:state', room => { S.room = room; render(); });
+  socket.on('room:state', room => { S.room = room; render(); TW.voice.onRoom(room); });
   socket.on('chat:history', msgs => {
     S.chat = msgs;
     const log = $('#chat-log');
@@ -375,7 +400,7 @@
     toast('You were removed from the room by the host', 'error', 5000);
     S.room = null; S.lastRoom = null; store.del('tw_room');
     history.replaceState(null, '', location.pathname);
-    render();
+    render(); TW.voice.onRoom(null);
   });
 
   render();

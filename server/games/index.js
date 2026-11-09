@@ -4,4 +4,5 @@ module.exports = {
   vines: require('./vines'),
   casefiles: require('./casefiles'),
   barrel: require('./barrel'),
+  hilo: require('./hilo'),
 };

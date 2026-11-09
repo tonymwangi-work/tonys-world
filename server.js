@@ -15,6 +15,12 @@ const rooms = new Map();
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+// ICE servers for voice/video. STUN is free; set TURN_URL/TURN_USERNAME/TURN_CREDENTIAL for tough networks.
+app.get('/api/ice', (_req, res) => {
+  const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  if (process.env.TURN_URL) ice.push({ urls: process.env.TURN_URL.split(','), username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+  res.json({ iceServers: ice });
+});
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const COLORS = ['#ff5a5f', '#3a86ff', '#2ec4b6', '#ffc93c', '#b388ff', '#ff8c42', '#06d6a0', '#f15bb5', '#9bdeac', '#4cc9f0'];
@@ -40,13 +46,14 @@ function pickColor(room) {
 }
 function gameMeta(id) {
   const m = GAMES[id];
-  return { id, name: m.name, minPlayers: m.minPlayers, maxPlayers: m.maxPlayers, supportsBots: m.supportsBots, optionsSchema: m.optionsSchema };
+  return { id, name: m.name, minPlayers: m.minPlayers, maxPlayers: m.maxPlayers, supportsBots: m.supportsBots, supportsTeams: !!m.supportsTeams, teamNote: m.teamNote || '', optionsSchema: m.optionsSchema };
 }
 
 function addHuman(room, name, avatar, token) {
   const p = {
     id: 'p' + (nextId++), token: token || null, name, avatar: AVATARS.includes(avatar) ? avatar : AVATARS[room.players.length % AVATARS.length],
     color: pickColor(room), isBot: false, connected: true, socketId: null, disconnectedAt: null, ghost: false,
+    team: room.teamsOn ? smallerTeam(room) : null, inCall: false, mic: true, cam: false,
   };
   room.players.push(p);
   return p;
@@ -54,13 +61,29 @@ function addHuman(room, name, avatar, token) {
 function addBot(room) {
   const used = new Set(room.players.map(p => p.name));
   const name = BOT_NAMES.find(n => !used.has(n)) || 'Bot ' + nextId;
-  const p = { id: 'b' + (nextId++), name, avatar: '🤖', color: pickColor(room), isBot: true, connected: true, ghost: false };
+  const p = { id: 'b' + (nextId++), name, avatar: '🤖', color: pickColor(room), isBot: true, connected: true, ghost: false, team: room.teamsOn ? smallerTeam(room) : null };
   room.players.push(p);
   return p;
 }
 
+function smallerTeam(room) {
+  const a = room.players.filter(p => p.team === 'A').length, b = room.players.filter(p => p.team === 'B').length;
+  return a <= b ? 'A' : 'B';
+}
+// which voice channel a player hears/speaks in: the room call, or their team's private channel during team play
+function voiceChannel(room, p) {
+  if (!p.inCall) return null;
+  if (room.state && room.gameTeams && p.team && room.participants.includes(p.id)) {
+    const mod = GAMES[room.game];
+    if (mod.privateTalk && mod.privateTalk(room.state, p.id)) return 'team:' + p.team;
+  }
+  return 'room';
+}
 function publicPlayer(p, room) {
-  return { id: p.id, name: p.name, avatar: p.avatar, color: p.color, isBot: p.isBot, ghost: p.ghost, connected: p.isBot || p.connected, isHost: room.hostId === p.id };
+  return {
+    id: p.id, name: p.name, avatar: p.avatar, color: p.color, isBot: p.isBot, ghost: p.ghost, connected: p.isBot || p.connected, isHost: room.hostId === p.id,
+    team: room.teamsOn || room.gameTeams ? p.team : null, inCall: !!p.inCall, mic: p.mic !== false, cam: !!p.cam, channel: voiceChannel(room, p),
+  };
 }
 function roomView(room, pid) {
   const mod = room.game ? GAMES[room.game] : null;
@@ -72,7 +95,7 @@ function roomView(room, pid) {
     code: room.code, you: pid, hostId: room.hostId,
     players: room.players.map(p => publicPlayer(p, room)),
     selectedGame: room.selectedGame, meta: gameMeta(room.selectedGame), options: room.options,
-    status: room.state ? 'playing' : 'lobby', game: room.game, view,
+    status: room.state ? 'playing' : 'lobby', game: room.game, view, teamsOn: !!room.teamsOn, gameTeams: !!room.gameTeams,
   };
 }
 function broadcast(room) {
@@ -163,6 +186,7 @@ io.on('connection', socket => {
     const r = room, p = player;
     room = null; player = null;
     socket.leave(r.code);
+    if (p.inCall) { p.inCall = false; p.cam = false; io.to(r.code).emit('rtc:left', { id: p.id }); }
     const mod = r.game && GAMES[r.game];
     const inGame = r.state && (r.participants || []).includes(p.id) && !mod.isOver(r.state);
     if (inGame) {
@@ -190,7 +214,7 @@ io.on('connection', socket => {
     if (room) leave();
     const r = {
       code: makeCode(), hostId: null, players: [], selectedGame: 'colorclash', options: GAMES.colorclash.defaultOptions(),
-      game: null, state: null, participants: [], chat: [], botTimer: null, reactTimer: null, emptySince: null,
+      game: null, state: null, participants: [], chat: [], botTimer: null, reactTimer: null, emptySince: null, teamsOn: false, gameTeams: false,
     };
     rooms.set(r.code, r);
     const p = addHuman(r, name, data.avatar, clean(data.token, 64));
@@ -238,6 +262,7 @@ io.on('connection', socket => {
     room.selectedGame = data.game;
     room.options = GAMES[data.game].defaultOptions();
     if (!GAMES[data.game].supportsBots) room.players = room.players.filter(p => !p.isBot);
+    if (!GAMES[data.game].supportsTeams) { room.teamsOn = false; room.players.forEach(p => { p.team = null; }); }
     reply(cb)({ ok: true });
     broadcast(room);
   });
@@ -250,6 +275,55 @@ io.on('connection', socket => {
     room.options[data.key] = data.value;
     reply(cb)({ ok: true });
     broadcast(room);
+  });
+
+  socket.on('room:teams', (data = {}, cb) => {
+    if (!hostOnly(cb)) return;
+    if (room.state) return reply(cb)({ error: 'Set up teams between games' });
+    if (!GAMES[room.selectedGame].supportsTeams) return reply(cb)({ error: `${GAMES[room.selectedGame].name} doesn't have teams` });
+    room.teamsOn = !!data.on;
+    room.players.forEach((p, i) => { p.team = room.teamsOn ? (i % 2 ? 'B' : 'A') : null; });
+    if (room.teamsOn) sysMsg(room, '👥 Teams are on: 🔴 Red vs 🔵 Blue');
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  socket.on('room:setTeam', (data = {}, cb) => {
+    if (!room) return reply(cb)({ error: 'You are not in a room' });
+    if (room.state) return reply(cb)({ error: 'Switch teams between games' });
+    if (!room.teamsOn) return reply(cb)({ error: 'Teams are off' });
+    const target = room.players.find(p => p.id === (data.id || player.id));
+    if (!target) return reply(cb)({ error: 'Player not found' });
+    if (target.id !== player.id && room.hostId !== player.id) return reply(cb)({ error: 'Only the host can move other players' });
+    if (!['A', 'B'].includes(data.team)) return reply(cb)({ error: 'Pick a team' });
+    target.team = data.team;
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+
+  // ── voice / video call signaling (peer-to-peer WebRTC; the server only relays messages)
+  socket.on('rtc:join', (data = {}, cb) => {
+    if (!room) return reply(cb)({ error: 'Join a room first' });
+    player.inCall = true; player.mic = data.mic !== false; player.cam = !!data.cam;
+    reply(cb)({ ok: true });
+    broadcast(room);
+  });
+  socket.on('rtc:leave', () => {
+    if (!room || !player.inCall) return;
+    player.inCall = false; player.cam = false;
+    io.to(room.code).emit('rtc:left', { id: player.id });
+    broadcast(room);
+  });
+  socket.on('rtc:media', (data = {}) => {
+    if (!room || !player.inCall) return;
+    player.mic = data.mic !== false; player.cam = !!data.cam;
+    broadcast(room);
+  });
+  socket.on('rtc:signal', (data = {}) => {
+    if (!room || !player.inCall || !data || typeof data !== 'object') return;
+    const target = room.players.find(p => p.id === data.to);
+    if (!target || !target.inCall || !target.socketId) return;
+    io.to(target.socketId).emit('rtc:signal', { from: player.id, data: data.data });
   });
 
   socket.on('room:addBot', (_d, cb) => {
@@ -288,9 +362,12 @@ io.on('connection', socket => {
     const seats = room.players;
     if (seats.length < mod.minPlayers) return reply(cb)({ error: `${mod.name} needs at least ${mod.minPlayers} players${mod.supportsBots ? ' — add a bot!' : ''}` });
     if (seats.length > mod.maxPlayers) return reply(cb)({ error: `${mod.name} allows at most ${mod.maxPlayers} players` });
+    const teams = !!(room.teamsOn && mod.supportsTeams);
+    if (teams && (!seats.some(p => p.team === 'A') || !seats.some(p => p.team === 'B'))) return reply(cb)({ error: 'Each team needs at least one player' });
     room.game = room.selectedGame;
     room.participants = seats.map(p => p.id);
-    room.state = mod.create(seats.map(p => ({ id: p.id, name: p.name, isBot: p.isBot })), { ...room.options });
+    room.gameTeams = teams;
+    room.state = mod.create(seats.map(p => ({ id: p.id, name: p.name, isBot: p.isBot, team: teams ? p.team : null })), { ...room.options, teams });
     sysMsg(room, `🎮 ${mod.name} has started!`);
     reply(cb)({ ok: true });
     afterChange(room);
@@ -300,7 +377,7 @@ io.on('connection', socket => {
     if (!hostOnly(cb)) return;
     clearTimeout(room.botTimer); clearTimeout(room.reactTimer);
     room.botTimer = room.reactTimer = null;
-    room.state = null; room.game = null; room.participants = [];
+    room.state = null; room.game = null; room.participants = []; room.gameTeams = false;
     room.players = room.players.filter(p => !p.ghost);
     reply(cb)({ ok: true });
     broadcast(room);
@@ -338,6 +415,7 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     if (!room || !player || player.socketId !== socket.id) return;
     player.connected = false;
+    if (player.inCall) { player.inCall = false; player.cam = false; io.to(room.code).emit('rtc:left', { id: player.id }); }
     player.disconnectedAt = Date.now();
     broadcast(room);
   });

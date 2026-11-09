@@ -10,9 +10,10 @@ Classic games and murder mysteries to play with friends in the browser. One pers
 | 🐍 **Snakes & Ladders**: climb ladders, dodge snakes, first to 100 | 1–6 (bots welcome) | ✅ |
 | 🛢️ **Barrel Climb**: live platformer, race up the girders and jump Big Bolt's barrels | 1–6 | ✅ |
 | 🕵️ **Case Files**: search scenes, question suspects, pin notes, accuse the killer. choose a case, then solve it together or race each other, with an optional countdown clock. 3 original cases | 1–10 | ✅ |
+| 📈 **Higher or Lower**: Spotify listeners, Instagram/TikTok/YouTube/X followers, Play Store downloads, box office. Take turns or everyone at once, solo or in teams | 1–10 (bots welcome) | ✅ |
 | 👾 Snack Attack · 🏙️ Tony-opoly Tycoon | | 🚧 coming soon |
 
-Features: room codes and invite links, chat, host controls, bots, automatic reconnect (refreshing the page keeps your seat), a bot takes over if someone leaves mid-game, works on phones.
+Features: room codes and invite links, chat, **voice & video calls** (with private team channels during team games), **teams** (Red vs Blue), host controls, bots, automatic reconnect (refreshing the page keeps your seat), a bot takes over if someone leaves mid-game, works on phones.
 
 ## Run it locally
 
@@ -40,6 +41,9 @@ git push -u origin main
 Note: on Render's free plan the server goes to sleep after 15 minutes without visitors. The first visit after that takes about 30–60 seconds to wake it up. Rooms live in memory, so they disappear when the server restarts or sleeps.
 
 Other hosts work too (Railway, Fly.io, Glitch): any service that runs `npm start` and supports WebSockets.
+
+## Voice & video
+Calls are peer-to-peer (WebRTC); the server only passes messages between browsers. On most home Wi-Fi this works out of the box. Some mobile networks and strict school/office networks block direct connections; for those, add a TURN server (e.g. a free Metered.ca or Cloudflare account) by setting these environment variables on Render: `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL`.
 
 ## Project layout
 

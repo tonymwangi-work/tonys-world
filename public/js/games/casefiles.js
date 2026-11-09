@@ -42,7 +42,7 @@
 
       function header() {
         const c = v.case;
-        const raceInfo = v.mode === 'race' ? v.players.map(p => `<span class="cf-racer ${v.accused.includes(p.id) ? 'out' : ''}">${esc((api.player(p.id) || {}).avatar || '🕵️')} ${esc(pName(p.id))}: ${p.found} clues</span>`).join('') : '';
+        const raceInfo = v.mode === 'race' ? v.racers.map(r => `<span class="cf-racer ${r.out ? 'out' : ''} ${r.key === v.myKey ? 'me' : ''}">${esc((api.player(r.key) || {}).avatar || '🕵️')} ${esc(r.label)}${r.key === v.myKey ? ' (you)' : ''}: ${r.found} clues</span>`).join('') : '';
         $('#cf-header', root).innerHTML = `
           <div class="cf-title"><span class="cf-emoji">${c.emoji}</span><div><h2>${esc(c.title)}</h2><p>${esc(c.tagline)}</p></div></div>
           <div class="cf-stats">
@@ -149,7 +149,7 @@
         },
         accuse() {
           const c = v.case;
-          const done = v.myVote && (v.mode === 'race' || v.phase === 'solved');
+          const done = !canAct() || (v.mode === 'race' && v.myVote && !v.out) || v.phase === 'solved';
           const group = (key, title, list) => `<div class="cf-acc-group"><h4>${title}</h4><div class="cf-choices">${list.map(x => `<button class="cf-choice ${sel[key] === x.id ? 'on' : ''}" data-pick="${key}:${x.id}" ${done ? 'disabled' : ''}>${x.emoji ? `<span>${x.emoji}</span>` : ''}${esc(x.name)}</button>`).join('')}</div></div>`;
           return `<div class="cf-accuse">
             ${group('culprit', '1. Who did it?', c.suspects)}
@@ -164,7 +164,7 @@
           const sus = id => (c.suspects.find(x => x.id === id) || {});
           let headline;
           if (v.mode === 'race' && r.timeout) headline = '⏰ Time ran out before anyone cracked it!';
-          else if (v.mode === 'race') headline = v.winner ? `${v.winner === api.me ? 'You' : esc(pName(v.winner))} cracked the case first!` : 'Nobody solved it — the killer walks free…';
+          else if (v.mode === 'race') headline = v.winner ? `${v.iWon ? (v.teams ? 'Your team' : 'You') : esc(v.winnerLabel)} cracked the case first!` : 'Nobody solved it — the killer walks free…';
           else headline = r.timeout && !Object.keys(v.allVotes || {}).length ? '⏰ Time ran out. The killer walks free…' : r.correct === 3 ? 'Case closed — the team got it right!' : r.correct === 2 ? 'So close! The team got two out of three.' : 'The killer got away…';
           const row = (label, key, list) => {
             const ans = v.mode === 'coop' ? r.answer[key] : null;
@@ -183,7 +183,7 @@
               <p>${esc(s.explanation)}</p>
               ${votes.length ? `<h4>Accusations</h4><ul class="cf-votes">${votes.map(([id, x]) => {
                 const right = x.culprit === s.culprit && x.weapon === s.weapon && x.motive === s.motive;
-                return `<li>${right ? '✅' : '❌'} <b>${esc(pName(id))}</b>: ${esc(sus(x.culprit).name)} · ${esc(nm(c.weapons, x.weapon))} · ${esc(nm(c.motives, x.motive))}</li>`;
+                return `<li>${right ? '✅' : '❌'} <b>${esc(id)}</b>: ${esc(sus(x.culprit).name)} · ${esc(nm(c.weapons, x.weapon))} · ${esc(nm(c.motives, x.motive))}</li>`;
               }).join('')}</ul>` : ''}
               <p class="muted">${api.isHost ? 'Pick another case from the lobby, or “Play again” to replay this one.' : 'Waiting for the host to pick the next case…'}</p>
             </div>
@@ -191,7 +191,8 @@
         },
       };
 
-      function canAct() { return isPlayer() && v.phase !== 'solved' && !(v.mode === 'race' && v.accused.includes(api.me)); }
+      // after a wrong guess you can keep investigating for practice; watching someone else is read-only
+      function canAct() { return isPlayer() && v.phase !== 'solved' && !v.watching; }
 
       function renderBody(full) {
         const body = $('#cf-body', root);
@@ -227,8 +228,11 @@
           html += `<p class="muted small">The case closes when every detective has voted. Majority decides each answer.</p>`;
           if (api.isHost && v.votes.length && v.phase !== 'solved') html += '<button class="btn btn-ghost btn-sm" data-reveal>Close the case now (host)</button>';
         } else {
-          if (v.myVote) html += '<div class="cf-out">❌ Your accusation was wrong — you are out of this race. Watch the others try!</div>';
-          else if (canAct()) html += `<button class="btn btn-danger btn-big" data-accuse ${ready ? '' : 'disabled'}>⚖️ Make my accusation (one chance!)</button>`;
+          if (v.out) {
+            html += `<div class="cf-out">❌ ${v.teams ? 'Your team\'s' : 'Your'} accusation was wrong, so you can't win this race. You can still investigate and make a <b>practice accusation</b> to see if you've cracked it. It won't count.</div>`;
+            if (v.practice) html += `<div class="cf-practice ${v.practice.correct ? 'ok' : 'bad'}">${v.practice.correct ? '🎯 Your practice accusation is RIGHT! (doesn\'t count, but nice detective work)' : '🤔 Your practice accusation is wrong too. Keep digging!'}</div>`;
+            if (canAct()) html += `<button class="btn btn-secondary btn-big" data-accuse ${ready ? '' : 'disabled'}>🎯 Practice accusation (doesn't count)</button>`;
+          } else if (canAct()) html += `<button class="btn btn-danger btn-big" data-accuse ${ready ? '' : 'disabled'}>⚖️ Make ${v.teams ? 'our team\'s' : 'my'} accusation (one chance!)</button>`;
         }
         foot.innerHTML = html;
       }
@@ -257,11 +261,13 @@
           return;
         }
         if (e.target.closest('[data-accuse]')) {
-          if (v.mode === 'race' && !confirm('You only get ONE accusation. Are you sure?')) return;
+          if (v.mode === 'race' && !v.out && !confirm(v.teams ? 'Your team only gets ONE accusation. Lock it in for everyone?' : 'You only get ONE accusation. Are you sure?')) return;
           const r = await api.act({ type: 'accuse', ...sel });
           if (r.ok && v.mode === 'coop') TW.toast('Accusation locked in ⚖️', 'ok');
           return;
         }
+        const w = e.target.closest('[data-watch]');
+        if (w) { await api.act({ type: 'watch', target: w.dataset.watch || null }); return; }
         if (e.target.closest('[data-reveal]')) { if (confirm('Close the case using the votes so far?')) api.act({ type: 'reveal' }); }
       });
       root.addEventListener('submit', async e => {
@@ -291,7 +297,7 @@
           <h3 class="cf-step">2 · How do you want to play?</h3>
           <div class="cf-mode-pick">
             <button class="cf-mode ${st.mode === 'coop' ? 'on' : ''}" data-setup="mode" data-val="coop" ${host ? '' : 'disabled'}><span>🤝</span><b>Tackle it together</b><small>One shared case file. Search, question and pin notes as a team, then vote on who did it.</small></button>
-            <button class="cf-mode ${st.mode === 'race' ? 'on' : ''}" data-setup="mode" data-val="race" ${host ? '' : 'disabled'}><span>🏁</span><b>Race each other</b><small>Everyone investigates alone. One accusation each. The first to name the killer correctly wins.</small></button>
+            <button class="cf-mode ${st.mode === 'race' ? 'on' : ''}" data-setup="mode" data-val="race" ${host ? '' : 'disabled'}><span>🏁</span><b>${v.teams ? 'Team vs team race' : 'Race each other'}</b><small>${v.teams ? '🔴 Red vs 🔵 Blue. Each team shares its own case file and talks in a private voice channel. One accusation per team; first correct team wins.' : 'Everyone investigates alone. One accusation each. The first to name the killer correctly wins.'}</small></button>
           </div>
           <h3 class="cf-step">3 · Race against the clock?</h3>
           <div class="cf-clock-pick">${[[0, '♾️ No clock'], [10, '⏱️ 10 min'], [20, '⏱️ 20 min'], [30, '⏱️ 30 min']].map(([m, l]) => `<button class="cf-clock ${st.clock === m ? 'on' : ''}" data-setup="clock" data-val="${m}" ${host ? '' : 'disabled'}>${l}</button>`).join('')}</div>
@@ -340,7 +346,7 @@
         lastFoundSeq = lf ? lf.seq : 0;
         if (v.phase === 'solved' && (!prev || prev.phase !== 'solved')) {
           tab = 'verdict';
-          const good = v.mode === 'race' ? v.winner === api.me : v.result.correct === 3;
+          const good = v.mode === 'race' ? v.iWon : v.result.correct === 3;
           if (good) TW.confetti();
         }
         header(); tabs(); tickClock();
@@ -349,8 +355,11 @@
         renderBody(!keep);
         if (tab === 'evidence') tabs();
         const banner = $('#cf-banner', root);
-        banner.hidden = !(v.mode === 'race' && v.myVote && v.phase !== 'solved');
-        banner.textContent = '❌ Your accusation was wrong — you are out of the race. You can still read your file.';
+        const others = v.racers.filter(r => r.key !== v.myKey);
+        banner.hidden = !(v.mode === 'race' && v.out && v.phase !== 'solved');
+        banner.innerHTML = v.watching
+          ? `👀 You're watching <b>${esc(v.watchingLabel)}</b>'s investigation (read-only). <button class="btn btn-sm btn-ghost" data-watch="">↩ Back to my own file</button>`
+          : `❌ Wrong accusation: you're out of the race. <span class="cf-banner-actions">${others.map(r => `<button class="btn btn-sm btn-secondary" data-watch="${esc(r.key)}">👀 Watch ${esc(r.label)}</button>`).join('')}<button class="btn btn-sm btn-ghost" data-tab="scenes">🔍 Keep investigating (practice)</button></span>`;
       }
       return { update, unmount() { clearInterval(clockTimer); } };
     },

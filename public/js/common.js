@@ -13,6 +13,7 @@ TW.CATALOG = [
   { id: 'colorclash', title: 'Color Clash', emoji: '🃏', tag: 'Match colors & numbers. Stack +2s, change colors, block your friends!', players: '2–10', accent: '#ff5a5f', ready: true },
   { id: 'vines', title: 'Snakes & Ladders', emoji: '🐍', tag: 'Roll the dice, climb the ladders, dodge the snakes to 100.', players: '1–6', accent: '#2ec4b6', ready: true },
   { id: 'casefiles', title: 'Case Files', emoji: '🕵️', tag: 'Search crime scenes, grill suspects and crack the murder.', players: '1–10', accent: '#c9a96e', ready: true },
+  { id: 'hilo', title: 'Higher or Lower', emoji: '📈', tag: 'Spotify listeners, Instagram followers, Play Store downloads… higher or lower?', players: '1–10', accent: '#b388ff', ready: true },
   { id: 'snack', title: 'Snack Attack', emoji: '👾', tag: 'Gobble dots in a maze while ghosts give chase.', players: '1–4', accent: '#ffc93c', ready: false },
   { id: 'barrel', title: 'Barrel Climb', emoji: '🛢️', tag: 'Race up the girders, jump the barrels Big Bolt throws!', players: '1–6', accent: '#ff8c42', ready: true },
   { id: 'tycoon', title: 'Tony-opoly Tycoon', emoji: '🏙️', tag: 'Buy streets, build towers, bankrupt your friends.', players: '2–6', accent: '#3a86ff', ready: false },

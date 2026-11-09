@@ -119,7 +119,8 @@
       const typing = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement && document.activeElement.tagName);
       const onKey = down => e => {
         const k = KEYMAP[e.key];
-        if (!k || typing()) return;
+        if (!k) return;
+        if (typing()) { if (!down) keys[k] = false; return; }
         e.preventDefault();
         if (k === 'jump' && down && !keys.jump) jumpQueued = true;
         keys[k] = down;
@@ -127,15 +128,34 @@
       const kd = onKey(true), ku = onKey(false);
       window.addEventListener('keydown', kd);
       window.addEventListener('keyup', ku);
+      // Touch buttons: capture the finger so a long hold (needed for climbing) never gets "lost"
+      // to the browser's long-press menu or a slight finger slide.
       root.querySelectorAll('[data-k]').forEach(b => {
         const k = b.dataset.k;
-        const on = e => { e.preventDefault(); if (k === 'jump') jumpQueued = true; keys[k] = true; b.classList.add('on'); };
-        const off = e => { e.preventDefault(); keys[k] = false; b.classList.remove('on'); };
+        const held = new Set();
+        const on = e => {
+          e.preventDefault();
+          try { b.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+          held.add(e.pointerId);
+          if (k === 'jump') jumpQueued = true;
+          keys[k] = true; b.classList.add('on');
+        };
+        const off = e => {
+          held.delete(e.pointerId);
+          if (held.size) return;
+          keys[k] = false; b.classList.remove('on');
+        };
         b.addEventListener('pointerdown', on);
         b.addEventListener('pointerup', off);
-        b.addEventListener('pointerleave', off);
         b.addEventListener('pointercancel', off);
+        b.addEventListener('lostpointercapture', off);
+        b.addEventListener('contextmenu', e => e.preventDefault());
       });
+      root.querySelector('.bc-touch').addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+      // release everything if the window loses focus (otherwise a key can get stuck "held")
+      const releaseAll = () => { Object.keys(keys).forEach(k => { keys[k] = false; }); root.querySelectorAll('[data-k].on').forEach(b => b.classList.remove('on')); };
+      window.addEventListener('blur', releaseAll);
+      document.addEventListener('visibilitychange', releaseAll);
       const onStream = ({ id, d }) => {
         const o = others[id] || (others[id] = { x: d.x, y: d.y });
         Object.assign(o, { tx: d.x, ty: d.y, f: d.f, c: d.c, dead: d.d, m: d.m, done: d.done, seen: performance.now() });
@@ -170,7 +190,7 @@
         }
         if (me.ground !== null) {
           for (const l of LADDERS) {
-            if (Math.abs(me.x - l.x) > 8) continue;
+            if (Math.abs(me.x - l.x) > 10) continue;
             if (keys.up && l.lo === me.ground) { me.climb = l; me.ground = null; return; }
             if (keys.down && l.hi === me.ground) { me.climb = l; me.ground = null; me.y += 2; return; }
           }
@@ -406,6 +426,7 @@
         unmount() {
           cancelAnimationFrame(raf); clearInterval(cdTimer);
           window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku);
+          window.removeEventListener('blur', releaseAll); document.removeEventListener('visibilitychange', releaseAll);
           api.socket.off('game:stream', onStream);
         },
       };

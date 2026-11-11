@@ -11,7 +11,8 @@ Classic games and murder mysteries to play with friends in the browser. One pers
 | 🛢️ **Barrel Climb**: live platformer, race up the girders and jump Big Bolt's barrels | 1–6 | ✅ |
 | 🕵️ **Case Files**: search scenes, question suspects, pin notes, accuse the killer. choose a case, then solve it together or race each other, with an optional countdown clock. 3 original cases | 1–10 | ✅ |
 | 📈 **Higher or Lower**: Spotify listeners, Instagram/TikTok/YouTube/X followers, Play Store downloads, box office. Take turns or everyone at once, solo or in teams | 1–10 (bots welcome) | ✅ |
-| 👾 Snack Attack · 🏙️ Tony-opoly Tycoon | | 🚧 coming soon |
+| 🏙️ **Tony-opoly Tycoon**: buy Nairobi, build houses & hotels, trade, auctions, mortgages, Vacation cash, and the rare GAMBLING TIME!!!! card. Board design lives in `server/tycoon-board.js` | 2–6 (bots welcome) | ✅ |
+| 👾 Snack Attack | | 🚧 coming soon |
 
 Features: room codes and invite links, chat, **voice & video calls** (with private team channels during team games), **teams** (Red vs Blue), host controls, bots, automatic reconnect (refreshing the page keeps your seat), a bot takes over if someone leaves mid-game, works on phones.
 

@@ -14,6 +14,7 @@ const io = new Server(server, { pingInterval: 10000, pingTimeout: 20000, maxHttp
 const rooms = new Map();
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/api/tycoon-board', (_req, res) => res.json(GAMES.tycoon.board));
 app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
 // ICE servers for voice/video calls.
 // STUN alone only works when both players' networks allow direct connections. A TURN relay makes

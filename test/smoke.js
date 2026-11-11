@@ -224,6 +224,38 @@ async function waitFor(fn, ms = 15000) {
   }
   assert(a.state.view.phase === 'over', `Higher or Lower game finished (${hl} human guesses, winner ${a.state.view.winner})`);
 
+  // ── Tony-opoly Tycoon: options, a few turns with a bot, trading
+  await a.call('room:lobby');
+  await a.call('room:select', { game: 'tycoon' });
+  await a.call('room:option', { key: 'cash', value: 2000 });
+  r = await a.call('room:start');
+  assert(r.ok, 'Tony-opoly started');
+  await waitFor(() => a.state.view && a.state.view.own);
+  assert(a.state.view.players.every(p => p.cash === 2000), 'everyone starts with M$2,000');
+  let ty = 0;
+  while (ty < 60 || (!Object.values(a.state.view.own).some(o => o.owner === a.state.you || o.owner === b.state.you) && ty < 200)) {
+    for (const p of [a, b]) {
+      const v = p.state.view;
+      if (!v || v.turnId !== p.state.you) continue;
+      const act = v.phase === 'roll' ? 'roll' : v.phase === 'buy' ? 'buy' : v.phase === 'end' ? 'endTurn' : v.phase === 'debt' ? 'bankrupt' : null;
+      if (act) { const res = await p.call('game:action', { type: act }); if (res.error && !/Not now|need/.test(res.error)) console.log('  tycoon:', act, res.error); }
+    }
+    ty++;
+    await sleep(150);
+  }
+  const owned = Object.values(a.state.view.own).filter(o => o.owner).length;
+  assert(owned > 0, `players are buying property (${owned} owned after ${ty} rounds)`);
+  const ownedBy = who => Object.keys(a.state.view.own).filter(i => a.state.view.own[i].owner === who.state.you).map(Number);
+  const [giver, taker] = ownedBy(a).length ? [a, b] : [b, a];
+  const prop = ownedBy(giver)[0];
+  assert(prop !== undefined, 'a human owns a property to trade');
+  r = await giver.call('game:action', { type: 'propose', to: taker.state.you, give: { props: [prop] }, get: { cash: 1 } });
+  await waitFor(() => taker.state.view.trades.length);
+  assert(r.ok && taker.state.view.trades.length === 1, 'trade offer delivered');
+  r = await taker.call('game:action', { type: 'respond', id: taker.state.view.trades[0].id, accept: true });
+  await waitFor(() => taker.state.view.own[prop].owner === taker.state.you);
+  assert(taker.state.view.own[prop].owner === taker.state.you, 'trade accepted: property changed hands');
+
   // ── reconnect: Ben drops and rejoins with same token
   b.disconnect();
   await waitFor(() => a.state.players.find(p => p.name === 'Ben' && !p.connected));

@@ -16,7 +16,7 @@ TW.CATALOG = [
   { id: 'hilo', title: 'Higher or Lower', emoji: '📈', tag: 'Spotify listeners, Instagram followers, Play Store downloads… higher or lower?', players: '1–10', accent: '#b388ff', ready: true },
   { id: 'snack', title: 'Snack Attack', emoji: '👾', tag: 'Gobble dots in a maze while ghosts give chase.', players: '1–4', accent: '#ffc93c', ready: false },
   { id: 'barrel', title: 'Barrel Climb', emoji: '🛢️', tag: 'Race up the girders, jump the barrels Big Bolt throws!', players: '1–6', accent: '#ff8c42', ready: true },
-  { id: 'tycoon', title: 'Tony-opoly Tycoon', emoji: '🏙️', tag: 'Buy streets, build towers, bankrupt your friends.', players: '2–6', accent: '#3a86ff', ready: false },
+  { id: 'tycoon', title: 'Tony-opoly Tycoon', emoji: '🏙️', tag: 'Buy Nairobi, build hotels, trade, and bankrupt your friends.', players: '2–6', accent: '#3a86ff', ready: true },
 ];
 TW.gameInfo = id => TW.CATALOG.find(g => g.id === id) || { title: id, emoji: '🎮' };
 
